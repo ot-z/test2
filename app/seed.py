@@ -17,7 +17,8 @@ from .models import (
     KnowledgeNode, PlanConfig, Problem, ProblemKnowledge, ProblemList,
     ProblemListItem, Setting, Syllabus, SyllabusItem, TagMapping,
 )
-from .seed_data import KNOWLEDGE_TREE, STARTER_PROBLEMS
+from .seed_data import KNOWLEDGE_TREE, LEGACY_LANQIAO_FIX, STARTER_BY_KEY, STARTER_PROBLEMS
+from .services.link_rules import derive_url
 
 
 def _node_index(db: Session) -> dict[str, int]:
@@ -115,9 +116,11 @@ def seed_problems(db: Session) -> int:
     nodes = _node_index(db)
     count = 0
     for item in STARTER_PROBLEMS:
+        # 链接以 link_rules.yaml 为唯一真源；数据文件里的 url 仅作兜底
+        url = derive_url(item["source"], item["source_key"]) or item["url"]
         problem = Problem(
             source=item["source"], source_key=item["source_key"], title=item["title"],
-            url=item["url"], difficulty_raw=item["difficulty_raw"],
+            url=url, difficulty_raw=item["difficulty_raw"],
             difficulty_level=item["difficulty_level"], external_tags=list(item["external_tags"]),
             summary=item.get("summary", ""), is_active=True, manual_edited=False,
             sync_status="seed",
@@ -187,9 +190,46 @@ def seed_settings(db: Session) -> int:
     return 1
 
 
+def fix_legacy_lanqiao(db: Session) -> list[dict]:
+    """把 v1.0.0 的虚构蓝桥杯编号 1~6 修正为官方真实编号（幂等）。
+
+    只处理「旧编号 + 旧链接形态」的种子记录，绝不改动用户手工新增的题目；
+    若真实编号已存在，则停用旧记录而不是制造重复。
+    """
+    changed: list[dict] = []
+    for old_key, new_key in LEGACY_LANQIAO_FIX.items():
+        row = db.scalar(select(Problem).where(
+            Problem.source == "lanqiao", Problem.source_key == old_key
+        ))
+        if row is None or f"/problems/{old_key}/" not in (row.url or ""):
+            continue
+        item = STARTER_BY_KEY.get(("lanqiao", new_key))
+        if item is None:
+            continue
+        duplicate = db.scalar(select(Problem).where(
+            Problem.source == "lanqiao", Problem.source_key == new_key
+        ))
+        if duplicate is not None and duplicate.id != row.id:
+            row.is_active = False
+            changed.append({"old_key": old_key, "new_key": new_key, "action": "deactivated_duplicate"})
+            continue
+        row.source_key = new_key
+        row.title = item["title"]
+        row.url = derive_url("lanqiao", new_key) or item["url"]
+        row.difficulty_raw = item["difficulty_raw"]
+        row.difficulty_level = item["difficulty_level"]
+        row.external_tags = list(item["external_tags"])
+        row.summary = item.get("summary", "")
+        row.sync_status = "seed"
+        changed.append({"old_key": old_key, "new_key": new_key, "action": "updated"})
+    if changed:
+        db.commit()
+    return changed
+
+
 def seed_all(db: Session) -> dict:
     """按顺序装配，返回各类新增数量。"""
-    return {
+    result = {
         "knowledge_nodes": seed_knowledge_tree(db),
         "tag_mappings": seed_tag_mappings(db),
         "syllabi": seed_syllabi(db),
@@ -198,3 +238,5 @@ def seed_all(db: Session) -> dict:
         "problem_lists": seed_starter_list(db),
         "settings": seed_settings(db),
     }
+    result["legacy_lanqiao_fixed"] = len(fix_legacy_lanqiao(db))
+    return result
