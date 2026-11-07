@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime
 from typing import Any
 
 import httpx
@@ -23,6 +22,7 @@ from ..models import (
 )
 from ..services.settings import get_all as get_settings
 from ..utils import difficulty_from_cf_rating, model_dict
+from .link_rules import derive_url
 
 CF_API = "https://codeforces.com/api/problemset.problems"
 AT_API = "https://kenkoooo.com/atcoder/resources/problems.json"
@@ -44,8 +44,12 @@ def _tag_map(db: Session, source: str) -> dict[str, list[int]]:
 def _attach_tags(db: Session, problem: Problem, source: str, tags: list[str]) -> int:
     mapping = _tag_map(db, source)
     added = 0
+    seen: set[int] = set()  # autoflush=False，pending 关联需本地去重
     for tag in tags:
         for node_id in mapping.get(str(tag).lower(), []):
+            if node_id in seen:
+                continue
+            seen.add(node_id)
             exists = db.scalar(select(ProblemKnowledge).where(
                 ProblemKnowledge.problem_id == problem.id,
                 ProblemKnowledge.node_id == node_id,
@@ -76,7 +80,8 @@ def _fetch_cf() -> list[dict]:
         rows.append({
             "source": "codeforces", "source_key": key,
             "title": p.get("name") or key,
-            "url": f"https://codeforces.com/problemset/problem/{p.get('contestId')}/{p.get('index')}",
+            "url": derive_url("codeforces", key) or
+                   f"https://codeforces.com/problemset/problem/{p.get('contestId')}/{p.get('index')}",
             "difficulty_raw": str(p.get("rating") or ""),
             "difficulty_level": difficulty_from_cf_rating(p.get("rating")),
             "external_tags": list(p.get("tags") or []),
@@ -99,7 +104,7 @@ def _fetch_at() -> list[dict]:
         rows.append({
             "source": "atcoder", "source_key": pid,
             "title": p.get("title") or pid,
-            "url": f"https://atcoder.jp/contests/{contest}/tasks/{pid}",
+            "url": derive_url("atcoder", pid) or f"https://atcoder.jp/contests/{contest}/tasks/{pid}",
             "difficulty_raw": "",
             "difficulty_level": 3,  # 公开 JSON 无难度字段，人工校准
             "external_tags": [],
@@ -136,9 +141,12 @@ def sync(db: Session, source: str, limit: int | None = None) -> dict:
         ).all()}
         tag_map = _tag_map(db, source)  # 全量同步时避免逐题查询映射表
 
-        def attach(problem: Problem, tags: list[str]) -> None:
+        def attach(problem: Problem, tags: list[str], existing_ids: set[int]) -> None:
             for tag in tags:
                 for node_id in tag_map.get(str(tag).lower(), []):
+                    if node_id in existing_ids:
+                        continue
+                    existing_ids.add(node_id)
                     dup = db.scalar(select(ProblemKnowledge).where(
                         ProblemKnowledge.problem_id == problem.id,
                         ProblemKnowledge.node_id == node_id,
@@ -162,7 +170,7 @@ def sync(db: Session, source: str, limit: int | None = None) -> dict:
                 )
                 db.add(problem)
                 db.flush()
-                attach(problem, row["external_tags"])
+                attach(problem, row["external_tags"], set())
                 result["added"] += 1
             elif old.manual_edited:
                 result["skipped_manual"] += 1  # 不覆盖人工编辑过的字段（FR-04 验收）

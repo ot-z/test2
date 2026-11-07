@@ -13,8 +13,8 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from ..config import SOURCES
 from ..errors import Conflict, NotFound, ValidationError
+from . import link_rules
 from ..models import (
     DailyPlanItem, KnowledgeNode, Note, Problem, ProblemKnowledge,
     ProblemSnapshot, StudyRecord, TagMapping,
@@ -23,23 +23,8 @@ from ..utils import clean_text, is_http_url, model_dict
 
 
 def derive_url(source: str, key: str) -> str:
-    """题号 → 原题链接（FR-02 粘贴题号即可批量建题）。"""
-    key = key.strip()
-    if source == "luogu":
-        return f"https://www.luogu.com.cn/problem/{key}"
-    if source == "leetcode":
-        return f"https://leetcode.cn/problems/{key.strip('/')}/"
-    if source == "codeforces":
-        m = re.match(r"^(\d+)[/\s_-]*([A-Za-z]\d*)$", key)
-        if m:
-            return f"https://codeforces.com/problemset/problem/{m.group(1)}/{m.group(2).upper()}"
-        return f"https://codeforces.com/problemset/problem/{key}"
-    if source == "atcoder":
-        contest = key.split("_")[0]
-        return f"https://atcoder.jp/contests/{contest}/tasks/{key}"
-    if source == "lanqiao":
-        return f"https://www.lanqiao.cn/problems/{key}/learning/"
-    return ""
+    """题号 → 原题链接（委托 config/link_rules.yaml，站点规则不再硬编码）。"""
+    return link_rules.derive_url(source, key)
 
 
 def _node_index(db: Session) -> dict[str, int]:
@@ -73,7 +58,7 @@ def _tag_list(value: Any) -> list[str]:
 
 def problem_detail(db: Session, problem: Problem) -> dict:
     out = model_dict(problem)
-    out["source_label"] = SOURCES.get(problem.source, problem.source)
+    out["source_label"] = link_rules.known_sources().get(problem.source, problem.source)
     links = db.scalars(
         select(ProblemKnowledge).where(ProblemKnowledge.problem_id == problem.id)
     ).all()
@@ -146,7 +131,7 @@ def list_problems(db: Session, q: dict) -> dict:
         stmt.order_by(order.asc(), Problem.id.asc()).offset((page - 1) * page_size).limit(page_size)
     ).all()
     return {
-        "items": [model_dict(p) | {"source_label": SOURCES.get(p.source, p.source)} for p in rows],
+        "items": [model_dict(p) | {"source_label": link_rules.known_sources().get(p.source, p.source)} for p in rows],
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -166,8 +151,9 @@ def create_problem(db: Session, payload: dict) -> dict:
     key = clean_text(payload.get("source_key"), 120)
     if not source or not key:
         raise ValidationError("source 与 source_key 必填")
-    if source not in SOURCES:
-        raise ValidationError(f"source 必须是 {', '.join(SOURCES)} 之一")
+    sources = link_rules.known_sources()
+    if source not in sources:
+        raise ValidationError(f"source 必须是 {', '.join(sources)} 之一")
     exists = db.scalar(select(Problem).where(Problem.source == source, Problem.source_key == key))
     if exists:
         raise Conflict(f"已存在同源同题号：{source}/{key}（id={exists.id}）")
@@ -269,7 +255,7 @@ def verify_link(db: Session, link_id: int) -> dict:
 def _parse_rows(payload: dict) -> list[dict]:
     """支持三种输入：附录 C 契约 JSON、CSV 文本、粘贴的题号行。"""
     default_source = clean_text(payload.get("source"), 32).lower() or "luogu"
-    if default_source not in SOURCES:
+    if default_source not in link_rules.known_sources():
         default_source = "other"
 
     if isinstance(payload.get("problems"), list):
@@ -306,7 +292,7 @@ def _parse_rows(payload: dict) -> list[dict]:
         if not parts:
             continue
         source = default_source
-        if parts[0].lower() in SOURCES:
+        if parts[0].lower() in link_rules.known_sources():
             source = parts[0].lower()
             parts = parts[1:]
         if not parts:
@@ -334,7 +320,7 @@ def import_batch(db: Session, payload: dict, dry_run: bool = False) -> dict:
     for idx, raw in enumerate(rows, start=1):
         source = clean_text(raw.get("source"), 32).lower()
         key = clean_text(raw.get("source_key") or raw.get("题号") or raw.get("key"), 120)
-        if not source or not key or source not in SOURCES:
+        if not source or not key or source not in link_rules.known_sources():
             failed.append({"row": idx, "reason": "缺少合法的 source / source_key"})
             continue
         if (source, key) in existing:
@@ -394,25 +380,28 @@ def import_batch(db: Session, payload: dict, dry_run: bool = False) -> dict:
             )
             db.add(problem)
             db.flush()
+            # SessionLocal 使用 autoflush=False，pending 对象不会被后续 SELECT 看到；
+            # 因此知识点关联必须用本地集合去重，不能只依赖数据库查重。
+            attached: set[int] = set()
             for name in dict.fromkeys(row["knowledge_nodes"]):
                 node_id = row["nodes_index"].get(name)
-                if not node_id:
+                if not node_id or node_id in attached:
                     continue
                 db.add(ProblemKnowledge(
                     problem_id=problem.id, node_id=node_id,
                     confidence=row["confidence"], verified=row["verified"],
                 ))
+                attached.add(node_id)
             # 外部标签归一（FR-06）
             for node_id in _map_tags(db, row["source"], row["external_tags"]):
-                dup = db.scalar(select(ProblemKnowledge).where(
-                    ProblemKnowledge.problem_id == problem.id,
-                    ProblemKnowledge.node_id == node_id,
+                if node_id in attached:
+                    continue
+                db.add(ProblemKnowledge(
+                    problem_id=problem.id, node_id=node_id,
+                    confidence="mapped", verified=True,
                 ))
-                if not dup:
-                    db.add(ProblemKnowledge(
-                        problem_id=problem.id, node_id=node_id,
-                        confidence="mapped", verified=True,
-                    ))
+                attached.add(node_id)
+            db.flush()
         db.commit()
         result["committed"] = True
     except Exception as exc:  # noqa: BLE001 —— 保证不产生半写入
