@@ -133,7 +133,7 @@
     try {
       planCfg = await QA.put('/api/plan/config', payload);
       renderPlan();
-      QA.toast('计划参数已保存（已生成新的配置版本，历史计划不受影响）', 'success');
+      QA.toast('参数已保存（历史计划不回溯）。请到首页点「重建未来 30 天计划」，新参数才会对未来计划生效', 'success');
     } catch (e) { QA.toast(QA.errMsg(e), 'error'); }
   };
 

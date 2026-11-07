@@ -23,11 +23,13 @@
       <div class="card-desc" id="today-sub">加载中…</div>
     </div>
     <div class="row">
-      <button class="btn btn-sm" id="btn-regenerate">重新生成 30 天计划</button>
+      <button class="btn btn-sm" id="btn-regenerate">重建未来 30 天计划</button>
+      <button class="btn btn-sm" id="btn-fill-today">只补今天</button>
       <button class="btn btn-sm" id="btn-refresh-today">刷新</button>
     </div>
   </div>
   <div id="ai-guide"></div>
+  <div id="plan-hint"></div>
   <div id="today-list"></div>
 </div>
 {% endblock %}
@@ -41,6 +43,7 @@
   var todayList = $('today-list');
   var todaySub = $('today-sub');
   var aiGuide = $('ai-guide');
+  var planHint = $('plan-hint');
 
   function fmtSync(s) {
     if (!s) return '暂无同步记录';
@@ -145,7 +148,7 @@
       var d = await QA.get('/api/plan/today');
       todaySub.textContent = '日期 ' + d.date + ' · 共 ' + d.items.length + ' 项任务 · 题单剩余 ' + d.queue_remaining + ' 题';
       if (!d.items || !d.items.length) {
-        todayList.innerHTML = QA.empty('今日无任务', '可能是休息日 / 暂停区间，或题单队列已耗尽。可在「设置」调整计划参数，或重新生成计划。');
+        todayList.innerHTML = QA.empty('今日无任务', '可能是休息日 / 暂停区间，或题单队列已耗尽。点击右上角「只补今天」按当前配置补题，或到「设置」调整计划参数。');
         return;
       }
       todayList.innerHTML = d.items.map(taskCard).join('');
@@ -154,6 +157,71 @@
       todaySub.textContent = '加载失败';
     }
   }
+
+  function showPlanHint(r) {
+    var shortage = (r.shortage_dates || []).length;
+    var summary = '重建窗口 ' + QA.esc(r.from) + ' ~ ' + QA.esc(r.to) +
+      '：新增 ' + QA.esc(r.generated_plans) + ' 天计划、补齐 ' + QA.esc(r.generated_items) + ' 项任务，涉及 ' +
+      QA.esc((r.refilled_dates || []).length) + ' 天。';
+    var cls = shortage ? 'alert-warn' : (r.generated_items ? 'alert-ok' : 'alert-info');
+    var html = '<div class="alert ' + cls + '">' + summary +
+      '<div style="margin-top:4px">' + QA.esc(r.hint || '') + '</div>';
+    if (shortage) {
+      html += '<div style="margin-top:6px">题单不足 ' + QA.esc(shortage) + ' 天。可前往 ' +
+        '<a href="/syllabus">大纲题单</a> 生成并确认新题单、<a href="/collect">题号采集</a> 扩充题库，' +
+        '或在 <a href="/settings">设置</a> 调低「每日新题」。计划不会从题库随机补题。</div>' +
+        '<div style="margin-top:8px"><button class="btn btn-sm" id="btn-refill">从题库补充题单并重建</button>' +
+        ' <span class="small muted">由你确认后补入未排过的题；不改动已有任务与计划参数</span></div>';
+    }
+    if (!r.generated_items && shortage) {
+      html += '<div style="margin-top:6px">本次没有新增任务：题库里可排的题已全部排进未来计划，再点重建不会凭空变出新题。' +
+        '上方「题单不足」是按 FR-10 的正常标记，不是生成失败。想延长覆盖，请先录入更多题目。' +
+        '今日已跳过的任务可点「学习中」恢复，不会占用新题额度。</div>';
+    } else if (!r.generated_items) {
+      html += '<div style="margin-top:6px">未来计划已按当前配置排满，无需补题。若想换掉已跳过的题目，可直接在任务上点「学习中」恢复，或调整每日题量后再次重建。</div>';
+    }
+    planHint.innerHTML = html + '</div>';
+  }
+
+  async function rebuild(days, btn) {
+    btn.disabled = true;
+    QA.toast(days === 1 ? '正在补齐今天…' : '正在重建未来 30 天计划…', 'info');
+    try {
+      var r = await QA.post('/api/plan/regenerate?days=' + days, {});
+      showPlanHint(r);
+      var shortage = (r.shortage_dates || []).length;
+      var msg = '新增 ' + r.generated_plans + ' 天 / 补齐 ' + r.generated_items + ' 项任务';
+      if (shortage) msg += '；题单不足 ' + shortage + ' 天，详见页面提示';
+      QA.toast(msg, shortage ? 'warn' : 'success');
+      await loadToday();
+      await loadHealth();
+    } catch (e) { QA.toast(QA.errMsg(e), 'error'); }
+    finally { btn.disabled = false; }
+  }
+
+  async function refillQueue(btn) {
+    btn.disabled = true;
+    try {
+      var r = await QA.post('/api/plan/refill-queue', {});
+      if (!r.added) {
+        QA.toast('题库已无未排过的新题，请到「题号采集」录入更多题目，或在「设置」调低每日新题数', 'warn');
+        planHint.insertAdjacentHTML('beforeend',
+          '<div class="alert alert-warn" style="margin-top:8px">' + QA.esc(r.hint) + '</div>');
+        btn.disabled = false;
+        return;
+      }
+      QA.toast('补入 ' + r.added + ' 道题，题单现有 ' + r.queue_remaining + ' 题，正在重建…', 'success');
+      await rebuild(30, $('btn-regenerate'));
+    } catch (e) {
+      QA.toast(QA.errMsg(e), 'error');
+      btn.disabled = false;
+    }
+  }
+
+  planHint.addEventListener('click', function (e) {
+    var btn = e.target.closest('#btn-refill');
+    if (btn) refillQueue(btn);
+  });
 
   async function patchStatus(id, status) {
     try {
@@ -205,17 +273,8 @@
 
   $('btn-refresh-health').addEventListener('click', loadHealth);
   $('btn-refresh-today').addEventListener('click', loadToday);
-  $('btn-regenerate').addEventListener('click', async function () {
-    var b = this; b.disabled = true;
-    QA.toast('正在重新生成 30 天计划…', 'info');
-    try {
-      var r = await QA.post('/api/plan/generate?days=30', {});
-      QA.toast('已生成 ' + r.generated_plans + ' 天 / ' + r.generated_items + ' 项任务', 'success');
-      await loadToday();
-      await loadHealth();
-    } catch (e) { QA.toast(QA.errMsg(e), 'error'); }
-    finally { b.disabled = false; }
-  });
+  $('btn-regenerate').addEventListener('click', function () { rebuild(30, this); });
+  $('btn-fill-today').addEventListener('click', function () { rebuild(1, this); });
 
   loadHealth();
   loadToday();

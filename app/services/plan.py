@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from ..config import DEFAULT_PLAN_CONFIG, TASK_STATUS_LABELS
 from ..db import _utcnow
+from ..errors import ValidationError
 from ..models import (
     DailyPlan, DailyPlanItem, Note, PlanConfig, Problem, ProblemList,
     ProblemListItem, ReviewState, StudyRecord,
@@ -330,6 +331,206 @@ def generate(db: Session, days: int = 30, from_date: date | None = None) -> dict
         "shortage_dates": shortage,
         "queue_remaining": queue_remaining(db),
         "config": config_dict(cfg),
+    }
+
+
+def regenerate(db: Session, days: int = 30, from_date: date | None = None) -> dict:
+    """重建未来 N 天计划（用户主动点击「重建未来计划」时调用）。
+
+    与 :func:`generate` 的区别：
+    - 窗口**从今天起算**，而不是配置的 ``start_date``；改过起始日期也不会只覆盖到过去；
+    - 已存在的日期**只补齐缺口**（按当前配置补足 new / review 任务），
+      不删除、不改任何已有任务，学习记录、笔记、已完成状态全部保留；
+    - 仍遵守 FR-10：题单队列耗尽只标记「题单不足」，**不从题库随机补题**；
+    - 补齐后再调用一次不会产生重复任务（幂等），因此不影响 TC-02 / TC-04 的语义。
+
+    TC-04 的「参数变更不回溯」依然成立：单纯改配置不会自动改动历史计划，
+    只有用户显式调用本函数才按新配置补齐未来计划。
+    """
+    days = max(1, min(int(days), 365))
+    cfg = active_config(db)
+    start = from_date or date.today()
+    end = start + timedelta(days=days - 1)
+
+    plist = active_list(db)
+    queue: list[ProblemListItem] = []
+    if plist:
+        queue = list(db.scalars(
+            select(ProblemListItem).where(
+                ProblemListItem.list_id == plist.id,
+                ProblemListItem.consumed.is_(False),
+            ).order_by(ProblemListItem.position, ProblemListItem.id)
+        ).all())
+    queue_idx = 0
+
+    source_pool = list(db.scalars(
+        select(DailyPlanItem).join(DailyPlan, DailyPlanItem.plan_id == DailyPlan.id)
+        .where(DailyPlanItem.item_type == "new", DailyPlan.plan_date <= end)
+        .order_by(DailyPlan.plan_date, DailyPlanItem.id)
+    ).all())
+
+    snapshot = {k: (getattr(cfg, k).isoformat() if k == "start_date" else getattr(cfg, k))
+                for k in CONFIG_FIELDS}
+    plans_created = 0
+    items_created = 0
+    shortage: list[str] = []
+    refilled: list[str] = []
+
+    for offset in range(days):
+        day = start + timedelta(days=offset)
+        day_index = (day - cfg.start_date).days + 1
+        if day_index < 1:
+            continue
+
+        plan = db.scalar(select(DailyPlan).where(DailyPlan.plan_date == day))
+        created = False
+        if plan is None:
+            plan = DailyPlan(
+                plan_date=day, config_id=cfg.id, generated_at=_utcnow(),
+                config_snapshot=snapshot, note="",
+            )
+            db.add(plan)
+            db.flush()
+            plans_created += 1
+            created = True
+        elif plan.config_snapshot is None:
+            plan.config_snapshot = snapshot
+
+        if _is_off_day(cfg, day):
+            if created:
+                plan.note = "休息日 / 暂停区间"
+            continue
+
+        existing = list(db.scalars(
+            select(DailyPlanItem).where(DailyPlanItem.plan_id == plan.id)
+            .order_by(DailyPlanItem.position, DailyPlanItem.id)
+        ).all())
+        have_new = sum(1 for i in existing if i.item_type == "new")
+        have_review = sum(1 for i in existing if i.item_type == "review")
+        need_new = max(0, cfg.new_per_day - have_new)
+        need_review = max(0, cfg.review_per_day - have_review) if day_index > cfg.review_delay_days else 0
+        if created or need_new or need_review:
+            refilled.append(day.isoformat())
+
+        used = {i.problem_id for i in existing}
+        position = max((i.position for i in existing), default=-1) + 1
+        notes: list[str] = []
+
+        for _ in range(need_new):
+            if queue_idx >= len(queue):
+                notes.append("题单不足：未从确认题单补题")
+                break
+            queue_item = queue[queue_idx]
+            queue_idx += 1
+            queue_item.consumed = True
+            item = DailyPlanItem(
+                plan_id=plan.id, item_type="new", problem_id=queue_item.problem_id,
+                status="pending", due_date=day, position=position,
+            )
+            position += 1
+            db.add(item)
+            db.flush()
+            items_created += 1
+            source_pool.append(item)
+            used.add(queue_item.problem_id)
+
+        if need_review:
+            picked = _pick_review(db, cfg, source_pool, day, used)[:need_review]
+            for src in picked:
+                db.add(DailyPlanItem(
+                    plan_id=plan.id, item_type="review", problem_id=src.problem_id,
+                    status="pending", due_date=day, source_plan_item_id=src.id,
+                    position=position,
+                ))
+                position += 1
+                db.flush()
+                items_created += 1
+
+        if notes:
+            merged = [n for n in (plan.note or "").split("；") if n]
+            merged.extend(notes)
+            plan.note = "；".join(dict.fromkeys(merged))
+            if day.isoformat() not in shortage:
+                shortage.append(day.isoformat())
+
+    db.commit()
+
+    remaining = queue_remaining(db)
+    needed = days * max(0, cfg.new_per_day)
+    per_day = max(1, cfg.new_per_day)
+    hint = (
+        f"窗口 {start.isoformat()} ~ {end.isoformat()}；按每日 {cfg.new_per_day} 道新题，"
+        f"{days} 天约需 {needed} 道，题单剩余 {remaining} 道，可完整覆盖约 {remaining // per_day} 天。"
+    )
+    if shortage:
+        hint += (
+            " 已按 FR-10 把题单耗尽的日期标记为「题单不足」，未从题库随机补题。"
+            "建议：到「大纲题单」生成并确认新题单、到「题号采集」扩充题库，或在「设置」调低每日新题数。"
+        )
+    return {
+        "mode": "regenerate",
+        "from": start.isoformat(),
+        "to": end.isoformat(),
+        "generated_plans": plans_created,
+        "generated_items": items_created,
+        "refilled_dates": refilled,
+        "shortage_dates": shortage,
+        "queue_remaining": remaining,
+        "hint": hint,
+        "config": config_dict(cfg),
+    }
+
+
+def refill_queue(db: Session, limit: int = 500) -> dict:
+    """从题库补充新题队列：把「未进激活题单、也未出现在任何计划任务」的题目追加进题单。
+
+    用于题单耗尽时由用户显式触发（补充哪些题、补多少都在返回里可见），
+    不改变任何已生成的任务，也不绕过 FR-08 的「确认后才进队列」——
+    按钮点击本身就是一次确认。不会自动修改计划参数。
+    """
+    plist = active_list(db)
+    if plist is None:
+        raise ValidationError("还没有已确认并激活的题单，请先到「大纲题单」生成、确认并激活一份题单")
+
+    in_list = set(db.scalars(
+        select(ProblemListItem.problem_id).where(ProblemListItem.list_id == plist.id)
+    ).all())
+    in_plans = set(db.scalars(select(DailyPlanItem.problem_id)).all())
+    used = in_list | in_plans
+
+    candidates = list(db.scalars(
+        select(Problem).where(Problem.is_active.is_(True))
+        .order_by(Problem.difficulty_level, Problem.source, Problem.source_key, Problem.id)
+    ).all())
+    available = [p for p in candidates if p.id not in used]
+    picked = available[: max(1, min(int(limit), 2000))]
+
+    pos = int(db.scalar(
+        select(func.max(ProblemListItem.position)).where(ProblemListItem.list_id == plist.id)
+    ) or -1) + 1
+    for p in picked:
+        db.add(ProblemListItem(list_id=plist.id, problem_id=p.id, position=pos, consumed=False))
+        pos += 1
+    db.commit()
+
+    remaining = queue_remaining(db)
+    cfg = active_config(db)
+    cover = remaining // max(1, cfg.new_per_day)
+    hint = (
+        f"从题库补入 {len(picked)} 道未排过的题（题库共 {len(candidates)} 道，"
+        f"此前已在题单或计划中 {len(used)} 道），题单现有 {remaining} 道；"
+        f"按每日 {cfg.new_per_day} 道新题，约可再覆盖 {cover} 天。"
+    )
+    if not picked:
+        hint += " 题库已无可补充的新题，请到「题号采集」录入更多题目，或在「设置」调低每日新题数，仅靠复习任务推进。"
+    elif cover < 30:
+        hint += f" 若要连续覆盖 30 天，建议在「设置」把每日新题调为 {max(1, remaining // 30)} 道左右。"
+    return {
+        "added": len(picked),
+        "available": len(available),
+        "queue_remaining": remaining,
+        "estimated_days": cover,
+        "hint": hint,
     }
 
 

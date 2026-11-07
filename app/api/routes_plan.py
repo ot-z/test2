@@ -22,8 +22,29 @@ def put_config(payload: dict = Body(...), db: Session = Depends(get_db)):
 
 
 @router.post("/generate")
-def generate(days: int = Query(30, ge=1, le=365), db: Session = Depends(get_db)):
-    return plan.generate(db, days=days)
+def generate(days: int = Query(30, ge=1, le=365),
+             from_date: str | None = Query(None, description="可选起始日期 YYYY-MM-DD；默认取计划配置的 start_date"),
+             db: Session = Depends(get_db)):
+    """预生成 N 天计划（幂等，已存在的日期整日跳过）。"""
+    return plan.generate(db, days=days, from_date=parse_date(from_date))
+
+
+@router.post("/regenerate")
+def regenerate(days: int = Query(30, ge=1, le=365),
+               from_date: str | None = Query(None, description="可选起始日期 YYYY-MM-DD；默认今天"),
+               db: Session = Depends(get_db)):
+    """重建未来 N 天计划：窗口从今天起算，已有日期按当前配置补齐任务缺口。
+
+    与 /generate 的区别见 plan.regenerate 文档：不删除任何已有任务，
+    队列耗尽只标记「题单不足」（FR-10）。
+    """
+    return plan.regenerate(db, days=days, from_date=parse_date(from_date))
+
+
+@router.post("/refill-queue")
+def refill_queue(limit: int = Query(500, ge=1, le=2000), db: Session = Depends(get_db)):
+    """题单耗尽时，由用户显式点击把题库中未排过的题补入激活题单。"""
+    return plan.refill_queue(db, limit=limit)
 
 
 @router.get("/today")
