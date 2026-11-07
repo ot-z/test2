@@ -1,0 +1,31 @@
+# =============================================================================
+# 用户自定义链接规则覆盖层（可入库、可随 git 回退）
+# -----------------------------------------------------------------------------
+# 这里写的规则会按 source 名与 config/link_rules.yaml 深度合并：同名字段覆盖，
+# 新 source 直接新增，无需改 Python 代码。界面「题号采集 → 规则配置」可直接编辑本文件。
+#
+# 示例（去掉注释即可生效）：
+#
+# rules:
+#   nowcoder:
+#     label: 牛客网
+#     aliases: [nowcoder, 牛客]
+#     key_pattern: '^\d{1,8}$'
+#     url_template: "https://ac.nowcoder.com/acm/problem/{key}"
+#     url_regexes:
+#       - 'https?://ac\.nowcoder\.com/acm/problem/(\d+)'
+#     url_key_template: '{1}'
+#     scan_regexes:
+#       - '\bNC(\d{1,8})\b'
+#     range_enabled: true
+#     examples: ["NC12345"]
+#
+# 只想改内置规则的某个字段时，写同名 source 的部分字段即可，例如：
+#
+# rules:
+#   luogu:
+#     url_template: "https://www.luogu.com.cn/problem/{key}"
+# =============================================================================
+
+version: 1
+rules: {}

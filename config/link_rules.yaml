@@ -1,0 +1,167 @@
+# =============================================================================
+# 题号 → 原题链接规则（link rules v1）
+# -----------------------------------------------------------------------------
+# 本文件是「自动题目录入 / 扫描采集」的唯一配置入口：新增站点或修正链接格式，
+# 只改这里（或 config/link_rules.custom.yaml 覆盖层），不需要改任何 Python 代码。
+#
+# 字段说明（每个 source 一条规则）：
+#   label             界面显示名
+#   aliases           输入行里可用来指定来源的别名，如 "luogu P1001"
+#   normalize         题号归一化规则列表，按顺序匹配，命中第一条即返回
+#                       regex    : Python 正则
+#                       template : 归一化模板，{0}=整串、{n}=第 n 个捕获组，
+#                                  {nU}/{nL}=该组转大写/小写，{key}=当前题号
+#   key_pattern       合法题号正则（可含捕获组，供 url_template 使用）
+#   url_template      链接模板，可用 {key} / {0} / {n} / {nU}
+#   url_regexes       反解链接用的正则（第 1 组起为捕获，配合 url_key_template）
+#   url_key_template  由反解捕获组重建 source_key
+#   scan_regexes      全文扫描模式下识别题号的正则（有第 1 组则取第 1 组）
+#   variants          同一来源存在多套题号体系时，用变体分别描述（如蓝桥云课 / 旧练习系统）
+#   range_enabled     是否允许 "P1001-P1010" 这类连续题号展开
+#
+# 合规边界（D-20 / NFR-05 / RK-09）：
+#   本规则只做「题号 → 链接」的本地推导与文本扫描，**不访问、不抓取、不解析任何题目网页**，
+#   不下载题面/样例/题解。题目元信息来自用户粘贴的文本或官方公开 API。
+# =============================================================================
+
+version: 1
+
+settings:
+  max_scan_items: 300      # 单次扫描最多产出的候选题目数
+  max_range_items: 200     # 单个连续题号区间最多展开多少条
+
+rules:
+
+  # ---------------------------------------------------------------- 洛谷
+  luogu:
+    label: 洛谷
+    home: "https://www.luogu.com.cn/problem/list"
+    aliases: [luogu, lg, 洛谷]
+    note: >-
+      洛谷题号首字母规则：P 主题库、B 入门与面试、U 用户题、T 团队题、
+      CF Codeforces、SP SPOJ、AT AtCoder、UVA UVA。
+      主题库题号可省略 P（输入 1001 会归一化为 P1001）。
+      蓝桥杯历年真题在洛谷也是 P 开头编号（如 P8649、P16232）。
+    key_pattern: '^(?:P\d{3,6}|B\d{3,5}|CF\d{1,5}[A-Z]\d*|SP\d{1,5}|AT\d{1,5}|UVA\d{3,5}|[UT]\d{4,8})$'
+    url_template: "https://www.luogu.com.cn/problem/{key}"
+    url_regexes:
+      - 'https?://(?:www\.)?luogu\.com\.cn/problem/([A-Za-z]+[A-Za-z0-9]+)/?'
+    url_key_template: '{1U}'
+    normalize:
+      - {regex: '^\d+$', template: 'P{0}'}
+      - {regex: '^洛谷\s*([A-Za-z]?\d+)$', template: '{1U}'}
+      - {regex: '^([A-Za-z]+)(\d[A-Za-z0-9]*)$', template: '{1U}{2U}'}
+    scan_regexes:
+      - '\b(?:P|B|U|T|CF|SP|AT|UVA)\d[A-Za-z0-9]*\b'
+    range_enabled: true
+    examples: ["P1001", "1001 → P1001", "B2001", "CF1234A", "P8649（蓝桥杯 2017 省 B k 倍区间）"]
+
+  # ---------------------------------------------------------------- 蓝桥杯
+  lanqiao:
+    label: 蓝桥杯
+    home: "https://www.lanqiao.cn/problems/"
+    aliases: [lanqiao, lq, 蓝桥, 蓝桥杯, 蓝桥云课]
+    note: >-
+      蓝桥云课题库题号是官方列表页的「编号」（1~4 位数字），不是竞赛卷面序号：
+      254 = A+B 问题【OJ 示例题目】、600 = 数列求值、602 = 迷宫、498 = 回文日期。
+      链接为 /problems/{编号}/learning/，做题需登录蓝桥账号。
+      旧版练习系统（lx.lanqiao.cn）使用 T1 / BEGIN-1 这类 gpid，见 legacy 变体。
+    normalize:
+      - {regex: '^(?:LQ|lq|蓝桥杯|蓝桥云课|蓝桥)[-:：\s]*(\d{1,5})$', template: '{1}'}
+      - {regex: '^#(\d{1,5})$', template: '{1}'}
+      - {regex: '^0+(\d+)$', template: '{1}'}
+      - {regex: '^t(\d+)$', template: 'T{1}'}
+      - {regex: '^(begin|basic)[-_]?(\d+)$', template: '{1U}-{2}'}
+    range_enabled: true
+    variants:
+      - id: cloud
+        label: 蓝桥云课题库（现行）
+        key_pattern: '^\d{1,5}$'
+        url_template: "https://www.lanqiao.cn/problems/{key}/learning/"
+        url_regexes:
+          - 'https?://(?:www\.)?lanqiao\.cn/problems/(\d{1,5})(?:/learning)?/?'
+        url_key_template: '{1}'
+        scan_regexes:
+          - '\bLQ-?(\d{1,5})\b'
+        examples: ["254 → A+B 问题【OJ 示例题目】", "600 → 数列求值", "1447 → 砝码称重"]
+      - id: legacy
+        label: 蓝桥杯旧练习系统（lx.lanqiao.cn）
+        key_pattern: '^(?:T\d+|BEGIN-\d+|BASIC-\d+)$'
+        url_template: "https://lx.lanqiao.cn/problem.page?gpid={key}"
+        url_regexes:
+          - 'https?://lx\.lanqiao\.cn/problem\.page\?gpid=([A-Za-z0-9-]+)'
+        url_key_template: '{1U}'
+        scan_regexes:
+          - '\b(BEGIN-\d+|T\d+)\b'
+        examples: ["T1 → 入门训练 A+B 问题", "BEGIN-1"]
+
+  # ---------------------------------------------------------------- Codeforces
+  codeforces:
+    label: Codeforces
+    home: "https://codeforces.com/problemset"
+    aliases: [codeforces, cf]
+    note: "题号 = 比赛编号 + 题目字母，如 4A / 231A；官方公开 API 同步时同样按此规则生成链接。"
+    key_pattern: '^(\d+)([A-Z]\d*)$'
+    url_template: "https://codeforces.com/problemset/problem/{1}/{2}"
+    url_regexes:
+      - 'https?://(?:www\.)?codeforces\.com/(?:problemset/problem|contest)/(\d+)/([A-Za-z]\d*)/?'
+    url_key_template: '{1}{2U}'
+    normalize:
+      - {regex: '^(\d+)[/\s_-]+([A-Za-z]\d*)$', template: '{1}{2U}'}
+      - {regex: '^CF[-:]?(\d+)([A-Za-z]\d*)$', template: '{1}{2U}'}
+      - {regex: '^(\d+)([a-z]\d*)$', template: '{1}{2U}'}
+    scan_regexes:
+      - '\bCF[-:]?(\d+[A-Za-z]\d*)\b'
+    range_enabled: false
+    examples: ["4A", "231A", "CF71A"]
+
+  # ---------------------------------------------------------------- AtCoder
+  atcoder:
+    label: AtCoder
+    home: "https://atcoder.jp/"
+    aliases: [atcoder, at]
+    note: "题号形如 abc001_1，下划线前是比赛 ID。"
+    key_pattern: '^([a-z0-9]+)_([a-z0-9_]+)$'
+    url_template: "https://atcoder.jp/contests/{1}/tasks/{key}"
+    url_regexes:
+      - 'https?://atcoder\.jp/contests/([a-z0-9]+)/tasks/([a-z0-9_]+)/?'
+    url_key_template: '{2L}'
+    normalize:
+      - {regex: '^AT[-:]?(.+)$', template: '{1L}'}
+    scan_regexes:
+      - '\bAT[-:]?([a-z]{3}\d{3}_[a-z0-9_]+)\b'
+    range_enabled: false
+    examples: ["abc001_1", "abc086_a"]
+
+  # ---------------------------------------------------------------- 力扣
+  leetcode:
+    label: 力扣（中国站）
+    home: "https://leetcode.cn/problemset/"
+    aliases: [leetcode, lc, 力扣]
+    note: "题号为题目 slug；按 D-20 仅存外链，不抓取题面。"
+    key_pattern: '^[a-z0-9-]+$'
+    url_template: "https://leetcode.cn/problems/{key}/"
+    url_regexes:
+      - 'https?://leetcode\.cn/problems/([a-z0-9-]+)/?'
+    url_key_template: '{1L}'
+    normalize:
+      - {regex: '^LC[-:](.+)$', template: '{1L}'}
+      - {regex: '^(.+)$', template: '{1L}'}
+    scan_regexes:
+      - '\bLC[-:]([a-z0-9-]+)\b'
+    range_enabled: false
+    examples: ["two-sum", "LC:climbing-stairs"]
+
+  # ---------------------------------------------------------------- 其它
+  other:
+    label: 其他
+    home: ""
+    aliases: [other, 其他, 自定义]
+    note: "无自动链接规则，导入时必须显式给出 http(s) 链接。"
+    key_pattern: '^\S+$'
+    url_template: ""
+    url_regexes: []
+    url_key_template: ""
+    scan_regexes: []
+    range_enabled: false
+    examples: ["自定义题目（需带 URL）"]
