@@ -1,0 +1,171 @@
+# 蓝桥杯软件赛 C/C++ 程序设计 大学 B 组 · 基线大纲（可编辑）
+# 说明：官方大纲为 PDF、非机器可读，本项目按 SRS F3 / FR-07 以版本化 YAML 维护，
+# 每年由用户手动更新；新增版本不影响旧版本已生成的题单。
+name: "蓝桥杯软件赛知识点大纲"
+track: "软件赛 C/C++ 程序设计"
+group_name: "大学 B 组"
+version: "2026-baseline"
+source_url: "https://x-static.lanqiao.cn/upload/202312/courseimg/efe733f6-0012-445e-af25-bf702e217e3d.pdf"
+effective_date: "2026-11-07"
+description: "依据官方公布的软件赛知识点大纲整理，系数为官方 1-10 难度系数的近似值，可在界面中调整。"
+items:
+  - node: "基础语法"          # 系数 1
+    difficulty_min: 1
+    difficulty_max: 2
+    priority: 10
+    coefficient: 1
+  - node: "模拟"
+    difficulty_min: 1
+    difficulty_max: 3
+    priority: 10
+    coefficient: 2
+  - node: "枚举"
+    difficulty_min: 1
+    difficulty_max: 3
+    priority: 10
+    coefficient: 2
+  - node: "排序"
+    difficulty_min: 1
+    difficulty_max: 3
+    priority: 9
+    coefficient: 3
+  - node: "递归"
+    difficulty_min: 2
+    difficulty_max: 4
+    priority: 8
+    coefficient: 3
+  - node: "前缀和/差分"
+    difficulty_min: 2
+    difficulty_max: 4
+    priority: 9
+    coefficient: 4
+  - node: "二分"
+    difficulty_min: 2
+    difficulty_max: 4
+    priority: 9
+    coefficient: 4
+  - node: "双指针"
+    difficulty_min: 2
+    difficulty_max: 4
+    priority: 8
+    coefficient: 4
+  - node: "数学"
+    difficulty_min: 1
+    difficulty_max: 5
+    priority: 8
+    coefficient: 4
+  - node: "数论"
+    difficulty_min: 2
+    difficulty_max: 5
+    priority: 7
+    coefficient: 5
+  - node: "组合数学"
+    difficulty_min: 2
+    difficulty_max: 5
+    priority: 6
+    coefficient: 6
+  - node: "贪心"
+    difficulty_min: 2
+    difficulty_max: 4
+    priority: 9
+    coefficient: 5
+  - node: "DFS"
+    difficulty_min: 2
+    difficulty_max: 5
+    priority: 9
+    coefficient: 5
+  - node: "BFS"
+    difficulty_min: 2
+    difficulty_max: 5
+    priority: 9
+    coefficient: 5
+  - node: "回溯"
+    difficulty_min: 2
+    difficulty_max: 5
+    priority: 7
+    coefficient: 6
+  - node: "栈"
+    difficulty_min: 1
+    difficulty_max: 3
+    priority: 7
+    coefficient: 3
+  - node: "队列"
+    difficulty_min: 1
+    difficulty_max: 3
+    priority: 7
+    coefficient: 3
+  - node: "单调栈"
+    difficulty_min: 3
+    difficulty_max: 5
+    priority: 6
+    coefficient: 6
+  - node: "哈希表"
+    difficulty_min: 1
+    difficulty_max: 4
+    priority: 8
+    coefficient: 4
+  - node: "并查集"
+    difficulty_min: 3
+    difficulty_max: 5
+    priority: 7
+    coefficient: 6
+  - node: "树状数组"
+    difficulty_min: 3
+    difficulty_max: 5
+    priority: 6
+    coefficient: 7
+  - node: "线段树"
+    difficulty_min: 3
+    difficulty_max: 5
+    priority: 5
+    coefficient: 8
+  - node: "字符串匹配"
+    difficulty_min: 2
+    difficulty_max: 5
+    priority: 6
+    coefficient: 6
+  - node: "动态规划"
+    difficulty_min: 2
+    difficulty_max: 5
+    priority: 10
+    coefficient: 6
+  - node: "线性DP"
+    difficulty_min: 2
+    difficulty_max: 5
+    priority: 9
+    coefficient: 6
+  - node: "背包DP"
+    difficulty_min: 3
+    difficulty_max: 5
+    priority: 9
+    coefficient: 7
+  - node: "区间DP"
+    difficulty_min: 4
+    difficulty_max: 5
+    priority: 5
+    coefficient: 8
+  - node: "图论"
+    difficulty_min: 3
+    difficulty_max: 5
+    priority: 7
+    coefficient: 7
+  - node: "最短路"
+    difficulty_min: 3
+    difficulty_max: 5
+    priority: 6
+    coefficient: 8
+  - node: "最小生成树"
+    difficulty_min: 3
+    difficulty_max: 5
+    priority: 5
+    coefficient: 8
+  - node: "拓扑排序"
+    difficulty_min: 3
+    difficulty_max: 5
+    priority: 6
+    coefficient: 7
+  - node: "计算几何"
+    difficulty_min: 3
+    difficulty_max: 5
+    priority: 4
+    coefficient: 9
