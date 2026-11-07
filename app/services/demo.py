@@ -6,7 +6,6 @@ from datetime import date, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..db import _utcnow
 from ..models import DailyPlan, DailyPlanItem, Note, Problem, StudyRecord
 from ..seed import seed_all
 from .exporter import clear_business_data

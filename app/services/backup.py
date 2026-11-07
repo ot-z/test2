@@ -4,7 +4,6 @@ from __future__ import annotations
 import sqlite3
 from datetime import date
 
-from sqlalchemy.orm import Session
 
 from ..config import BACKUP_DIR, DATABASE_PATH
 

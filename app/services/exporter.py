@@ -5,7 +5,6 @@
 """
 from __future__ import annotations
 
-import json
 import re
 from datetime import date, datetime
 from pathlib import Path
@@ -17,7 +16,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.types import Date, DateTime, JSON
 
 from ..config import EXPORT_DIR, SOURCES
-from ..db import Base, _utcnow
+from ..db import _utcnow
 from ..errors import NotFound, ValidationError
 from ..models import (
     AiCall, AiMessage, DailyPlan, DailyPlanItem, ExportRecord, KnowledgeNode,

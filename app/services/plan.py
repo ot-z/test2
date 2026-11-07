@@ -11,8 +11,7 @@
 from __future__ import annotations
 
 import random
-from datetime import date, datetime, timedelta
-from typing import Any
+from datetime import date, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
