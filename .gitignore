@@ -1,0 +1,47 @@
+# ===== 密钥与本地配置（严禁入库）=====
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets.*
+config/secrets.*
+
+# 原始方案含明文 API Key，排除入库；脱敏归档见 docs/02-项目开发需求文档.md 附录 A
+刷题助手第一次规划.txt
+
+# ===== 业务数据与产物（不入库，另走备份策略）=====
+data/
+backups/
+exports/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# ===== Node（方案 A 前端启用时生效）=====
+node_modules/
+dist/
+.vite/
+
+# ===== 编辑器 / 系统 =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+
+# ===== WorkBuddy 项目数据（保留在本地，不纳入版本库）=====
+.workbuddy/
