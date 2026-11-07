@@ -1,0 +1,390 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="notice">
+  <strong>自动题目录入 · 只按链接规则工作</strong>：粘贴题号、链接或题单文本，系统按
+  <code class="inline">config/link_rules.yaml</code> 归一化题号并生成原题链接，确认后写入题库。
+  <strong>不访问、不抓取、不解析任何题目网页</strong>，也不生成题面快照。
+  蓝桥云课题号是官方题库列表页的「编号」：<strong>254 = A+B 问题【OJ 示例题目】</strong>，不是 1；
+  旧练习系统的 <code class="inline">T1 / BEGIN-1</code> 属于 legacy 变体。
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <div>
+      <div class="card-title">链接规则 <span class="muted small" id="rules-version"></span></div>
+      <div class="card-desc">新增站点或修改链接格式，只改这里的 YAML，不需要改代码。改完立即生效。</div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-sm" id="btn-rule-reload">重新加载</button>
+      <button class="btn btn-sm" id="btn-rule-edit">编辑规则</button>
+    </div>
+  </div>
+  <div id="rules-box">正在加载规则…</div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <div>
+      <div class="card-title">扫描并录入题目</div>
+      <div class="card-desc">每行一个题号，可跟标题；支持 <code class="inline">P1001-P1005</code> 连续展开、完整链接、行内来源前缀（如 <code class="inline">LQ254</code>）。</div>
+    </div>
+  </div>
+
+  <div class="toolbar" id="example-bar"><span class="small muted">示例：</span>加载中…</div>
+
+  <div class="form-row-3">
+    <div class="field">
+      <label>来源</label>
+      <select id="f-source"><option value="auto">自动识别（带前缀题号）</option></select>
+      <div class="field-help">指定来源后，纯数字题号按该来源规则推导；混合清单可留「自动识别」。</div>
+    </div>
+    <div class="field">
+      <label>扫描模式</label>
+      <select id="f-mode">
+        <option value="lines">按行解析（推荐，可带标题与范围）</option>
+        <option value="text">全文扫描（正则提取题号与链接）</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>裸数字默认归属</label>
+      <select id="f-default"></select>
+      <div class="field-help">自动识别模式下，纯数字（如 254）按此来源处理，避免静默录错。</div>
+    </div>
+  </div>
+
+  <div class="field">
+    <label>题号 / 链接 / 题单文本</label>
+    <textarea id="f-text" rows="11" spellcheck="false" placeholder="254 A+B 问题【OJ 示例题目】&#10;P8649 k 倍区间&#10;https://www.luogu.com.cn/problem/P1001 A+B Problem&#10;P1001-P1005"></textarea>
+  </div>
+
+  <div class="form-row-3">
+    <div class="field">
+      <label>默认难度</label>
+      <select id="f-level">
+        <option value="1">1 · 入门</option><option value="2">2 · 基础</option>
+        <option value="3" selected>3 · 进阶</option><option value="4">4 · 提高</option>
+        <option value="5">5 · 竞赛</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>外部标签（可选，逗号分隔）</label>
+      <input type="text" id="f-tags" placeholder="如 动态规划, 蓝桥杯">
+    </div>
+    <div class="field">
+      <label>知识点（可选，逗号分隔，需与知识点树同名）</label>
+      <input type="text" id="f-nodes" placeholder="如 背包DP, 动态规划">
+    </div>
+  </div>
+
+  <div class="row">
+    <button class="btn btn-primary" id="btn-preview">扫描预览</button>
+    <button class="btn" id="btn-dry">预览导入（查重）</button>
+    <button class="btn" id="btn-commit">确认录入</button>
+    <span class="hint">先预览，确认链接与题号无误再录入；重复题号会自动跳过。</span>
+  </div>
+
+  <hr class="hr">
+  <div id="scan-result"><div class="hint">尚未扫描。可先点一个示例，再点「扫描预览」。</div></div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <div>
+      <div class="card-title">题库体检与链接修复</div>
+      <div class="card-desc">按当前规则检查已有题目的题号与外链，找出历史错误编号并一键修正。</div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-sm" id="btn-audit">开始体检</button>
+      <button class="btn btn-sm" id="btn-repair-preview">预览修复</button>
+      <button class="btn btn-sm btn-primary" id="btn-repair-commit">执行修复</button>
+    </div>
+  </div>
+  <label class="check" style="margin-bottom:12px">
+    <input type="checkbox" id="f-include-manual"> 同时修复人工编辑过的题目链接（默认跳过）
+  </label>
+  <div id="audit-result"><div class="hint">正在体检…</div></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+  var $ = QA.el;
+  var rulesData = null;
+
+  function chips(obj) {
+    return Object.keys(obj || {}).map(function (k) {
+      return '<span class="chip">' + QA.esc(k) + ' · ' + QA.esc(obj[k]) + '</span>';
+    }).join(' ') || '<span class="muted small">无</span>';
+  }
+
+  function renderRules(data) {
+    rulesData = data;
+    $('rules-version').textContent = 'v' + QA.esc(data.version);
+    var html = '<div class="table-wrap"><table><thead><tr>' +
+      '<th>来源</th><th>题号规则</th><th>链接模板</th><th>示例</th></tr></thead><tbody>';
+    data.items.forEach(function (r) {
+      var n = Math.max(1, r.variants.length);
+      r.variants.forEach(function (v, i) {
+        html += '<tr>';
+        if (i === 0) {
+          html += '<td rowspan="' + n + '"><strong>' + QA.esc(r.label) + '</strong>' +
+            '<div class="mono muted">' + QA.esc(r.source) + '</div>' +
+            (r.custom ? '<span class="badge badge-primary">自定义</span>' : '') + '</td>';
+        }
+        html += '<td><div class="mono">' + QA.esc(v.key_pattern || '—') + '</div>' +
+          '<div class="small muted">' + QA.esc(v.label || '') + '</div></td>' +
+          '<td><div class="mono">' + QA.esc(v.url_template || '（需显式填写 URL）') + '</div></td>' +
+          '<td class="small">' + QA.esc((v.examples || []).join('；')) + '</td></tr>';
+      });
+      if (r.note) {
+        html += '<tr><td colspan="4"><details><summary class="small muted">规则说明 / 题号体系</summary>' +
+          '<div class="hint" style="margin-top:6px">' + QA.esc(r.note) + '</div></details></td></tr>';
+      }
+    });
+    html += '</tbody></table></div>';
+    $('rules-box').innerHTML = html;
+  }
+
+  function loadRules() {
+    return QA.get('/api/link-rules').then(function (d) {
+      renderRules(d);
+    }).catch(function (e) { QA.showError($('rules-box'), e); });
+  }
+
+  function fillSelect(el, withAuto, selected) {
+    var src = QA.sources();
+    var html = withAuto ? '<option value="auto">自动识别（带前缀题号）</option>' : '';
+    html += Object.keys(src).map(function (k) {
+      return '<option value="' + QA.esc(k) + '"' + (k === selected ? ' selected' : '') + '>' +
+        QA.esc(src[k]) + ' · ' + QA.esc(k) + '</option>';
+    }).join('');
+    el.innerHTML = html;
+    if (selected) el.value = selected;
+  }
+
+  function loadExamples() {
+    return QA.get('/api/link-rules/examples').then(function (d) {
+      var html = '<span class="small muted">示例：</span>';
+      d.items.forEach(function (ex) {
+        html += '<button class="btn btn-sm" data-ex="' + QA.esc(ex.id) + '">' + QA.esc(ex.title) + '</button>';
+      });
+      $('example-bar').innerHTML = html;
+      $('example-bar').querySelectorAll('[data-ex]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var ex = d.items.filter(function (x) { return x.id === btn.getAttribute('data-ex'); })[0];
+          if (!ex) return;
+          $('f-text').value = ex.text;
+          $('f-source').value = ex.source;
+          $('f-mode').value = 'lines';
+          QA.toast('已填入示例：' + ex.title, 'info');
+        });
+      });
+    }).catch(function (e) { $('example-bar').innerHTML = '示例加载失败：' + QA.esc(QA.errMsg(e)); });
+  }
+
+  function payload() {
+    return {
+      text: $('f-text').value,
+      source: $('f-source').value,
+      mode: $('f-mode').value,
+      default_source: $('f-default').value,
+      difficulty_level: Number($('f-level').value || 3),
+      external_tags: $('f-tags').value,
+      knowledge_nodes: $('f-nodes').value
+    };
+  }
+
+  function renderScan(d) {
+    var bad = d.items.filter(function (i) { return !i.rule_ok; }).length;
+    var html = '<div class="row" style="margin-bottom:10px">' +
+      '<span class="badge badge-primary">识别 ' + QA.esc(d.total) + ' 条</span>' +
+      '<span class="badge ' + (bad ? 'badge-warn' : 'badge-success') + '">规则校验异常 ' + QA.esc(bad) + ' 条</span>' +
+      (d.truncated ? '<span class="badge badge-warn">已达单次上限，请分批扫描</span>' : '') + '</div>';
+    if (d.issues && d.issues.length) {
+      html += '<div class="alert alert-warn" style="margin-bottom:10px"><strong>未识别 ' +
+        d.issues.length + ' 行：</strong><br>' + d.issues.slice(0, 8).map(function (x) {
+          return '第 ' + QA.esc(x.line || 0) + ' 行 · ' + QA.esc(x.text) + ' — ' + QA.esc(x.reason);
+        }).join('<br>') + '</div>';
+    }
+    if (!d.items.length) {
+      $('scan-result').innerHTML = html + QA.empty('没有识别到题目', '检查题号格式，或为纯数字题号指定来源。');
+      return;
+    }
+    html += '<div class="table-wrap"><table><thead><tr><th>#</th><th>来源 / 题号</th><th>标题</th>' +
+      '<th>生成的原题链接</th><th>校验</th></tr></thead><tbody>';
+    d.items.forEach(function (it, i) {
+      html += '<tr><td class="muted">' + (i + 1) + '</td>' +
+        '<td><div class="cell-sub">' + QA.esc(QA.sourceLabel(it.source)) + '</div>' +
+        '<div class="mono">' + QA.esc(it.source_key) + '</div></td>' +
+        '<td>' + QA.esc(it.title) + '</td>' +
+        '<td class="small">' + QA.externalLink(it.url, it.url, 'mono') + '</td>' +
+        '<td>' + (it.rule_ok ? QA.badge('符合规则', 'badge-success') : QA.badge('需检查', 'badge-warn')) + '</td></tr>';
+    });
+    html += '</tbody></table></div>';
+    $('scan-result').innerHTML = html;
+  }
+
+  function renderImportResult(d) {
+    var html = '<div class="alert ' + (d.failed && d.failed.length ? 'alert-warn' : 'alert-ok') + '">' +
+      '<strong>' + (d.committed ? '录入完成' : '导入预览（未写库）') + '</strong>：扫描 ' +
+      QA.esc(d.scanned || 0) + ' 条，可新增 ' + QA.esc(d.added || 0) + ' 条，重复 ' +
+      QA.esc((d.duplicates || []).length) + ' 条，失败 ' + QA.esc((d.failed || []).length) + ' 条。' +
+      (d.message ? ' ' + QA.esc(d.message) : '') + '</div>';
+    if (d.duplicates && d.duplicates.length) {
+      html += '<div class="hint">重复：' + d.duplicates.slice(0, 12).map(function (x) {
+        return QA.esc(x.source + '/' + x.source_key);
+      }).join('、') + '</div>';
+    }
+    if (d.failed && d.failed.length) {
+      html += '<div class="hint">失败：' + d.failed.slice(0, 12).map(function (x) {
+        return '第 ' + QA.esc(x.row) + ' 行 ' + QA.esc(x.reason);
+      }).join('；') + '</div>';
+    }
+    $('scan-result').innerHTML = html + $('scan-result').innerHTML;
+  }
+
+  function renderAudit(d) {
+    var html = '<div class="row" style="margin-bottom:10px">' +
+      '<span class="badge badge-primary">题库共 ' + QA.esc(d.total) + ' 条</span>' +
+      '<span class="badge ' + (d.issue_count ? 'badge-warn' : 'badge-success') + '">' +
+      '待修正 ' + QA.esc(d.issue_count) + ' 条</span>' + chips(d.by_issue) + '</div>';
+    if (!d.issues.length) {
+      $('audit-result').innerHTML = html + '<div class="alert alert-ok">所有题目的题号与链接均符合当前规则，无需修复。</div>';
+      return;
+    }
+    html += '<div class="table-wrap"><table><thead><tr><th>题目</th><th>问题</th><th>当前链接</th><th>建议</th></tr></thead><tbody>';
+    d.issues.forEach(function (x) {
+      html += '<tr><td><div class="cell-title">#' + QA.esc(x.problem_id) + ' · ' + QA.esc(x.title) + '</div>' +
+        '<div class="mono muted">' + QA.esc(x.source + '/' + x.source_key) + '</div></td>' +
+        '<td>' + QA.badge(x.issue, x.issue === 'legacy_seed' ? 'badge-danger' : 'badge-warn') +
+        '<div class="small muted">' + QA.esc(x.reason) + '</div></td>' +
+        '<td class="small mono">' + (x.url ? QA.externalLink(x.url, x.url, 'mono') : '（空）') + '</td>' +
+        '<td class="small">' + (x.expected_key ? '题号改为 <code class="inline">' + QA.esc(x.expected_key) + '</code><br>' : '') +
+        QA.esc(x.expected_title || '') + '<br>' +
+        (x.expected_url ? QA.externalLink(x.expected_url, x.expected_url, 'mono') : '需人工处理') + '</td></tr>';
+    });
+    html += '</tbody></table></div>';
+    if (d.truncated) html += '<div class="hint">结果已截断，可分批修复。</div>';
+    $('audit-result').innerHTML = html;
+  }
+
+  function repairBody() {
+    return { include_manual: $('f-include-manual').checked, fix_legacy: true };
+  }
+
+  function renderRepair(d) {
+    var total = (d.url_changes || []).length + (d.legacy_changes || []).length;
+    var html = '<div class="alert ' + (d.committed ? 'alert-ok' : 'alert-info') + '" style="margin-bottom:10px">' +
+      '<strong>' + (d.committed ? '修复完成' : '修复预览（未写库）') + '</strong>：共 ' +
+      QA.esc(d.changed || total) + ' 条变更，跳过 ' + QA.esc((d.skipped || []).length) + ' 条。' +
+      QA.esc(d.message || '') + '</div>';
+    var all = (d.legacy_changes || []).concat(d.url_changes || []);
+    if (all.length) {
+      html += '<div class="table-wrap"><table><thead><tr><th>题目</th><th>变更</th><th>修复后链接</th></tr></thead><tbody>';
+      all.slice(0, 60).forEach(function (x) {
+        html += '<tr><td class="mono">#' + QA.esc(x.problem_id || '') + ' ' +
+          QA.esc(x.old_key || x.source_key || '') + '</td>' +
+          '<td class="small">' + (x.new_key ? '题号 ' + QA.esc(x.old_key) + ' → ' + QA.esc(x.new_key) +
+            '<br>' + QA.esc(x.title || '') : '链接按规则重算') + '</td>' +
+          '<td class="small mono">' + (x.after ? QA.externalLink(x.after, x.after, 'mono') : '—') + '</td></tr>';
+      });
+      html += '</tbody></table></div>';
+    }
+    $('audit-result').innerHTML = html;
+  }
+
+  function audit() {
+    return QA.get('/api/link-rules/audit').then(renderAudit)
+      .catch(function (e) { QA.showError($('audit-result'), e); });
+  }
+
+  /* ---------------------------------------------------------------- 事件绑定 */
+  fillSelect($('f-source'), true, null);
+  fillSelect($('f-default'), false, 'luogu');
+  loadRules();
+  loadExamples();
+  audit();
+
+  $('btn-rule-reload').onclick = function () {
+    QA.post('/api/link-rules/reload').then(function () {
+      QA.toast('链接规则已重新加载', 'success');
+      loadRules(); audit();
+    }).catch(function (e) { QA.toast(QA.errMsg(e), 'error'); });
+  };
+
+  $('btn-rule-edit').onclick = function () {
+    if (!rulesData) return;
+    var html = '<div class="field"><label>用户覆盖层：link_rules.custom.yaml</label>' +
+      '<textarea id="rule-yaml" rows="18" spellcheck="false" style="font-family:var(--mono);font-size:12px">' +
+      QA.esc(rulesData.custom_yaml) + '</textarea>' +
+      '<div class="field-help">同名字段覆盖内置规则，新 source 直接新增。保存前会校验 YAML 与正则；' +
+      '本文件纳入 git 管理，改坏了可以直接回退。修改后立即热加载，无需重启服务。</div></div>' +
+      '<div class="modal-actions"><button class="btn" id="rule-cancel">取消</button>' +
+      '<button class="btn btn-primary" id="rule-save">校验并保存</button></div>';
+    var body = QA.openModal('编辑链接规则', html, true);
+    body.querySelector('#rule-cancel').onclick = QA.closeModal;
+    body.querySelector('#rule-save').onclick = function () {
+      var btn = this; btn.disabled = true;
+      QA.put('/api/link-rules/custom', { yaml: body.querySelector('#rule-yaml').value })
+        .then(function () {
+          QA.closeModal(); QA.toast('规则已保存并生效', 'success');
+          loadRules(); audit();
+        })
+        .catch(function (e) { QA.toast(QA.errMsg(e), 'error'); btn.disabled = false; });
+    };
+  };
+
+  $('btn-preview').onclick = function () {
+    $('scan-result').innerHTML = QA.loading('正在按规则扫描…');
+    QA.post('/api/link-rules/preview', payload()).then(renderScan)
+      .catch(function (e) { QA.showError($('scan-result'), e); });
+  };
+
+  $('btn-dry').onclick = function () {
+    QA.post('/api/link-rules/collect?dry_run=true', payload())
+      .then(renderImportResult)
+      .catch(function (e) { QA.toast(QA.errMsg(e), 'error'); });
+  };
+
+  $('btn-commit').onclick = function () {
+    var body = QA.openModal('确认录入题目',
+      '<div class="alert alert-info">将把预览中的题目按当前链接规则写入题库；重复题号自动跳过，不会生成题面快照。</div>' +
+      '<div class="modal-actions"><button class="btn" id="ci-cancel">取消</button>' +
+      '<button class="btn btn-primary" id="ci-ok">确认录入</button></div>');
+    body.querySelector('#ci-cancel').onclick = QA.closeModal;
+    body.querySelector('#ci-ok').onclick = function () {
+      var btn = this; btn.disabled = true;
+      QA.post('/api/link-rules/collect?dry_run=false', payload())
+        .then(function (d) {
+          QA.closeModal(); renderImportResult(d); audit();
+          QA.toast('录入完成：新增 ' + (d.added || 0) + ' 题', 'success');
+        })
+        .catch(function (e) { QA.toast(QA.errMsg(e), 'error'); btn.disabled = false; });
+    };
+  };
+
+  $('btn-audit').onclick = audit;
+
+  $('btn-repair-preview').onclick = function () {
+    QA.post('/api/link-rules/repair?dry_run=true', repairBody())
+      .then(renderRepair).catch(function (e) { QA.toast(QA.errMsg(e), 'error'); });
+  };
+
+  $('btn-repair-commit').onclick = function () {
+    QA.post('/api/link-rules/repair?dry_run=true', repairBody()).then(function (preview) {
+      if (!preview.changed) { QA.toast('没有需要修复的题目', 'info'); audit(); return; }
+      QA.confirmDanger('确认修复题号与链接',
+        '将按 link_rules.yaml 修正 ' + preview.changed + ' 条题目的链接 / 旧蓝桥杯编号。' +
+        '此操作会修改本地数据库，但可用 git 标签与每日备份回退。',
+        function () {
+          return QA.post('/api/link-rules/repair?dry_run=false', repairBody())
+            .then(function (d) { renderRepair(d); QA.toast(d.message, 'success'); });
+        });
+    }).catch(function (e) { QA.toast(QA.errMsg(e), 'error'); });
+  };
+})();
+</script>
+{% endblock %}

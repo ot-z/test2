@@ -24,7 +24,7 @@ from .api import api_router
 from .config import ROOT
 from .db import Base, SessionLocal, engine
 from .errors import AppError
-from .services import backup, plan
+from .services import backup, link_rules, plan
 
 logging.basicConfig(
     level=logging.INFO,
@@ -115,6 +115,7 @@ async def handle_unexpected(_request: Request, exc: Exception):
 PAGES = {
     "today": "今日任务",
     "problems": "题库目录",
+    "collect": "题号采集",
     "knowledge": "知识点与标签",
     "syllabus": "大纲与题单",
     "history": "历史与统计",
@@ -134,6 +135,7 @@ def _render(request: Request, page: str, **context):
             "page_title": PAGES[page],
             "pages": PAGES,
             "version": __version__,
+            "sources": link_rules.known_sources(),
             **context,
         },
     )
@@ -147,6 +149,11 @@ def page_today(request: Request):
 @app.get("/problems", include_in_schema=False)
 def page_problems(request: Request):
     return _render(request, "problems")
+
+
+@app.get("/collect", include_in_schema=False)
+def page_collect(request: Request):
+    return _render(request, "collect")
 
 
 @app.get("/knowledge", include_in_schema=False)

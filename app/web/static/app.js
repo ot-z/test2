@@ -311,10 +311,13 @@
     return '<span class="badge ' + cls + '">' + QA.esc(QA.difficultyLabel(n)) + ' · ' + QA.esc(n) + '/5</span>';
   };
 
-  var SOURCES = {
+  /* 来源表由后端 link_rules.yaml 注入（base.html 的 window.QA_SOURCES），
+     这样用户在规则配置里新增站点后，所有页面的来源下拉会同步生效。 */
+  var SOURCES = Object.assign({
     codeforces: 'Codeforces', luogu: '洛谷', leetcode: '力扣',
     atcoder: 'AtCoder', lanqiao: '蓝桥杯', other: '其他'
-  };
+  }, global.QA_SOURCES || {});
+  QA.sources = function () { return SOURCES; };
   QA.sourceLabel = function (s) { return SOURCES[s] || String(s || '—'); };
   QA.sourceOptions = function (selected) {
     return Object.keys(SOURCES).map(function (k) {

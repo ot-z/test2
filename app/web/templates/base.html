@@ -48,6 +48,7 @@
   <div id="qa-toast-root" class="toast-root" aria-live="polite"></div>
   <div id="qa-modal-root"></div>
 
+  <script>window.QA_SOURCES = {{ sources | tojson }};</script>
   <script src="{{ url_for('static', path='/app.js') }}"></script>
   {% block scripts %}{% endblock %}
 </body>
