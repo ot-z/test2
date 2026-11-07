@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="notice">
+  <strong>知识点与标签</strong> · 知识点树用于组织题目；标签映射把外部标签（如 Codeforces 的 <span class="mono">dp</span>）归一到内部知识点。
+  AI 建议的关联默认<strong>未确认</strong>，确认后才参与组题筛选。
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <div><div class="card-title">知识点树</div><div class="card-desc" id="tree-sub">加载中…</div></div>
+    <div class="row">
+      <button class="btn btn-primary btn-sm" id="btn-add-root">+ 新增根节点</button>
+      <button class="btn btn-sm" id="btn-refresh-tree">刷新</button>
+    </div>
+  </div>
+  <div id="tree-box"></div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <div><div class="card-title">标签映射表</div><div class="card-desc">外部标签 → 内部知识点节点</div></div>
+  </div>
+  <form class="inline-form" id="mapping-form" style="margin-bottom:14px">
+    <div class="field"><label>来源</label>
+      <select name="source">
+        <option value="*">*（所有来源）</option>
+        <option value="codeforces">Codeforces</option>
+        <option value="luogu">洛谷</option>
+        <option value="leetcode">力扣</option>
+        <option value="atcoder">AtCoder</option>
+        <option value="lanqiao">蓝桥杯</option>
+        <option value="other">其他</option>
+      </select>
+    </div>
+    <div class="field"><label>外部标签</label><input type="text" name="external_tag" required placeholder="如 dp / 动态规划"></div>
+    <div class="field"><label>映射到知识点</label><select name="node_id" id="map-node"></select></div>
+    <button type="submit" class="btn btn-primary btn-sm">添加 / 更新映射</button>
+  </form>
+  <div id="mapping-box"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+  var $ = QA.el;
+  var treeBox = $('tree-box');
+  var mappingBox = $('mapping-box');
+  var flatNodes = [];
+
+  function nodeOptions(selected, includeRoot) {
+    var html = includeRoot ? '<option value="">（根节点，无父级）</option>' : '';
+    flatNodes.forEach(function (n) {
+      html += '<option value="' + n.id + '"' + (String(selected) === String(n.id) ? ' selected' : '') + '>' +
+        QA.esc(n.name) + ' · ' + QA.esc(QA.categoryLabel(n.category)) + '</option>';
+    });
+    return html;
+  }
+
+  function renderTree(items) {
+    function walk(nodes) {
+      if (!nodes || !nodes.length) return '';
+      var html = '<ul>';
+      nodes.forEach(function (n) {
+        html += '<li><div class="tree-node">' +
+          '<span class="tree-name">' + QA.esc(n.name) + '</span>' +
+          QA.badge(n.category_label || QA.categoryLabel(n.category), 'badge-primary') +
+          '<span class="badge badge-muted">' + QA.esc(n.problem_count) + ' 题</span>' +
+          (n.description ? '<span class="small muted">· ' + QA.esc(n.description) + '</span>' : '') +
+          '<span class="tree-actions">' +
+            '<button class="btn btn-xs" data-act="add-child" data-id="' + n.id + '">+子</button>' +
+            '<button class="btn btn-xs" data-act="edit-node" data-id="' + n.id + '">编辑</button>' +
+            '<button class="btn btn-xs" data-act="del-node" data-id="' + n.id + '">删除</button>' +
+          '</span></div>' + walk(n.children) + '</li>';
+      });
+      return html + '</ul>';
+    }
+    return '<ul class="tree">' + walk(items) + '</ul>';
+  }
+
+  async function loadTree() {
+    treeBox.innerHTML = QA.loading('正在加载知识点树…');
+    try {
+      var res = await QA.get('/api/knowledge-nodes');
+      var items = res.items || [];
+      $('tree-sub').textContent = '共 ' + flatNodes.length + ' 个节点';
+      treeBox.innerHTML = items.length ? renderTree(items) : QA.empty('知识点树为空', '点击「新增根节点」开始建立知识体系。');
+    } catch (e) { QA.showError(treeBox, e); }
+  }
+
+  function findNode(id) {
+    return flatNodes.filter(function (n) { return String(n.id) === String(id); })[0] || null;
+  }
+
+  function openNodeForm(node, parentId) {
+    var creating = !node;
+    node = node || {};
+    var body = QA.openModal(creating ? '新增知识点节点' : '编辑知识点节点 #' + node.id,
+      '<form id="node-form">' +
+        '<div class="field"><label>名称 *</label><input type="text" name="name" required value="' + QA.esc(node.name || '') + '"></div>' +
+        '<div class="form-row">' +
+          '<div class="field"><label>类别</label><select name="category">' +
+            [['knowledge','知识点'],['data_structure','数据结构'],['algorithm','算法']].map(function (c) {
+              return '<option value="' + c[0] + '"' + ((node.category || 'knowledge') === c[0] ? ' selected' : '') + '>' + c[1] + '</option>';
+            }).join('') + '</select></div>' +
+          '<div class="field"><label>父节点</label><select name="parent_id">' + nodeOptions(node.parent_id || parentId || '', true) + '</select></div>' +
+        '</div>' +
+        '<div class="form-row">' +
+          '<div class="field"><label>排序值</label><input type="number" name="sort_order" value="' + QA.esc(node.sort_order || 0) + '"></div>' +
+          '<div class="field"><label>描述</label><input type="text" name="description" value="' + QA.esc(node.description || '') + '"></div>' +
+        '</div>' +
+        '<div class="modal-actions"><button type="button" class="btn" id="nf-cancel">取消</button>' +
+        '<button type="submit" class="btn btn-primary">' + (creating ? '创建节点' : '保存修改') + '</button></div>' +
+      '</form>');
+    if (!body) return;
+    body.querySelector('#nf-cancel').onclick = QA.closeModal;
+    body.querySelector('#node-form').onsubmit = async function (e) {
+      e.preventDefault();
+      var fd = new FormData(e.target);
+      var payload = {
+        name: String(fd.get('name') || '').trim(),
+        category: String(fd.get('category')),
+        parent_id: fd.get('parent_id') ? Number(fd.get('parent_id')) : null,
+        sort_order: Number(fd.get('sort_order') || 0),
+        description: String(fd.get('description') || '')
+      };
+      if (!payload.name) { QA.toast('名称不能为空', 'error'); return; }
+      try {
+        await (creating ? QA.post('/api/knowledge-nodes', payload) : QA.patch('/api/knowledge-nodes/' + node.id, payload));
+        QA.toast(creating ? '节点已创建' : '节点已更新', 'success');
+        QA.closeModal();
+        await loadFlat();
+        loadTree();
+      } catch (err) { QA.toast(QA.errMsg(err), 'error'); }
+    };
+  }
+
+  function openDeleteNode(id) {
+    var n = findNode(id) || {};
+    var body = QA.openModal('删除知识点节点',
+      '<div class="alert alert-warn">即将删除节点「' + QA.esc(n.name || ('#' + id)) + '」。<br>' +
+      '默认策略会<strong>阻止删除含子节点的父节点</strong>；若勾选强制，子节点将上移到其父级，相关标签关联 / 映射 / 大纲条目会被一并清理。</div>' +
+      '<label class="check"><input type="checkbox" id="del-force"> 强制删除（force=true，子节点上移）</label>' +
+      '<div class="modal-actions"><button class="btn" id="del-cancel">取消</button>' +
+      '<button class="btn btn-danger" id="del-ok">删除</button></div>');
+    if (!body) return;
+    body.querySelector('#del-cancel').onclick = QA.closeModal;
+    body.querySelector('#del-ok').onclick = async function () {
+      var force = body.querySelector('#del-force').checked;
+      try {
+        await QA.del('/api/knowledge-nodes/' + id + (force ? '?force=true' : ''));
+        QA.toast('节点已删除', 'success');
+        QA.closeModal();
+        await loadFlat();
+        loadTree();
+      } catch (err) { QA.toast(QA.errMsg(err), 'error'); }
+    };
+  }
+
+  treeBox.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    var id = btn.getAttribute('data-id');
+    var act = btn.getAttribute('data-act');
+    if (act === 'add-child') openNodeForm(null, id);
+    else if (act === 'edit-node') openNodeForm(findNode(id), null);
+    else if (act === 'del-node') openDeleteNode(id);
+  });
+
+  /* -------------------------- 标签映射 -------------------------- */
+  async function loadMappings() {
+    mappingBox.innerHTML = QA.loading('正在加载标签映射…');
+    try {
+      var res = await QA.get('/api/tag-mappings');
+      var items = res.items || [];
+      if (!items.length) { mappingBox.innerHTML = QA.empty('暂无标签映射', '添加映射后，同步 / 导入时外部标签会自动归一到知识点。'); return; }
+      mappingBox.innerHTML = '<div class="table-wrap"><table><thead><tr>' +
+        '<th>ID</th><th>来源</th><th>外部标签</th><th>映射知识点</th><th>操作</th>' +
+        '</tr></thead><tbody>' + items.map(function (m) {
+          return '<tr><td class="mono muted">#' + m.id + '</td>' +
+            '<td>' + QA.esc(m.source === '*' ? '*（所有来源）' : QA.sourceLabel(m.source)) + '</td>' +
+            '<td><span class="chip chip-primary">' + QA.esc(m.external_tag) + '</span></td>' +
+            '<td>' + QA.esc(m.node_name || '?') + '</td>' +
+            '<td><button class="btn btn-xs" data-act="del-map" data-id="' + m.id + '">删除</button></td></tr>';
+        }).join('') + '</tbody></table></div>';
+    } catch (e) { QA.showError(mappingBox, e); }
+  }
+
+  mappingBox.addEventListener('click', async function (e) {
+    var btn = e.target.closest('[data-act="del-map"]');
+    if (!btn) return;
+    try {
+      await QA.del('/api/tag-mappings/' + btn.getAttribute('data-id'));
+      QA.toast('映射已删除', 'success');
+      loadMappings();
+    } catch (err) { QA.toast(QA.errMsg(err), 'error'); }
+  });
+
+  $('mapping-form').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    var fd = new FormData(e.target);
+    var payload = {
+      source: String(fd.get('source') || '*'),
+      external_tag: String(fd.get('external_tag') || '').trim(),
+      node_id: Number(fd.get('node_id') || 0)
+    };
+    if (!payload.external_tag || !payload.node_id) { QA.toast('请填写外部标签并选择知识点', 'error'); return; }
+    try {
+      await QA.put('/api/tag-mappings', payload);
+      QA.toast('映射已保存', 'success');
+      e.target.reset();
+      loadMappings();
+    } catch (err) { QA.toast(QA.errMsg(err), 'error'); }
+  });
+
+  async function loadFlat() {
+    var res = await QA.get('/api/knowledge-nodes/flat');
+    flatNodes = res.items || [];
+    $('map-node').innerHTML = flatNodes.length
+      ? flatNodes.map(function (n) { return '<option value="' + n.id + '">' + QA.esc(n.name) + '</option>'; }).join('')
+      : '<option value="">（请先创建知识点节点）</option>';
+  }
+
+  $('btn-add-root').onclick = function () { openNodeForm(null, null); };
+  $('btn-refresh-tree').onclick = function () { loadFlat().then(function(){ loadTree(); loadMappings(); }).catch(function (e) { QA.toast(QA.errMsg(e), 'error'); }); };
+
+  (async function init() {
+    try { await loadFlat(); } catch (e) { QA.toast(QA.errMsg(e), 'error'); }
+    loadTree();
+    loadMappings();
+  })();
+})();
+</script>
+{% endblock %}

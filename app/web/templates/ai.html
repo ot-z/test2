@@ -1,0 +1,258 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="notice"><strong>AI 助手</strong> · 需要联网并配置 API Key；核心刷题功能在断网 / 未配置时不受影响。所有输出均为辅助参考。</div>
+
+<div id="ai-guide"></div>
+
+<div class="card">
+  <div class="card-head"><div><div class="card-title">AI 面板</div><div class="card-desc">题目分析 / 代码诊断走流式输出（SSE）；标签建议为单次 JSON 请求</div></div></div>
+  <div class="field" style="max-width:420px"><label>关联题目（可选）</label><select id="ai-problem"><option value="">不关联具体题目</option></select></div>
+
+  <div class="tabs" id="ai-tabs">
+    <button class="tab active" data-tab="analyze">题目分析</button>
+    <button class="tab" data-tab="debug">代码诊断</button>
+    <button class="tab" data-tab="tags">标签建议</button>
+  </div>
+
+  <div class="tab-panel active" id="panel-analyze">
+    <div class="field"><label>题面 / 思路文本</label><textarea id="in-analyze" rows="6" placeholder="粘贴题面或你的解题思路，AI 会给出分步提示而非直接答案"></textarea></div>
+    <div class="toolbar">
+      <button class="btn btn-primary btn-sm" id="btn-analyze">开始分析</button>
+      <button class="btn btn-sm" id="btn-stop-analyze" disabled>停止生成</button>
+    </div>
+    <div class="ai-disclaimer">AI 生成，仅供参考，请以官方题解与独立验证为准。</div>
+    <div class="ai-output" id="out-analyze"></div>
+  </div>
+
+  <div class="tab-panel" id="panel-debug">
+    <div class="field"><label>代码文本</label><textarea id="in-debug" rows="6" class="mono" placeholder="粘贴你的代码"></textarea></div>
+    <div class="field"><label>错误现象</label><input type="text" id="in-phenomenon" placeholder="如 WA on test 3 / 段错误 / TLE"></div>
+    <div class="toolbar">
+      <button class="btn btn-primary btn-sm" id="btn-debug">开始诊断</button>
+      <button class="btn btn-sm" id="btn-stop-debug" disabled>停止生成</button>
+    </div>
+    <div class="ai-disclaimer">AI 生成，仅供参考，请以官方题解与独立验证为准。</div>
+    <div class="ai-output" id="out-debug"></div>
+  </div>
+
+  <div class="tab-panel" id="panel-tags">
+    <div class="field"><label>题面 / 题目描述文本</label><textarea id="in-tags" rows="6" placeholder="粘贴题面文本，AI 返回知识点 / 难度建议"></textarea></div>
+    <div class="toolbar"><button class="btn btn-primary btn-sm" id="btn-tags">获取标签建议</button></div>
+    <div class="ai-disclaimer">AI 生成，仅供参考，需人工确认后才参与组题筛选。</div>
+    <div id="out-tags"></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <div><div class="card-title">用量与连接</div><div class="card-desc" id="usage-sub">加载中…</div></div>
+    <div class="row"><button class="btn btn-sm" id="btn-test">测试连接</button><button class="btn btn-sm" id="btn-refresh-usage">刷新用量</button></div>
+  </div>
+  <div id="test-result"></div>
+  <div id="usage-box"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+  var $ = QA.el;
+  var controller = null;
+  var generating = false;
+
+  function disclaimerHtml() {
+    return '<div class="ai-disclaimer">AI 生成，仅供参考，请以官方题解与独立验证为准。</div>';
+  }
+  function setGenerating(on, startId, stopId) {
+    generating = on;
+    $(startId).disabled = on;
+    $(stopId).disabled = !on;
+  }
+  function problemId() {
+    var v = $('ai-problem').value;
+    return v ? Number(v) : null;
+  }
+  function renderOut(el, text, cursor) {
+    el.innerHTML = QA.mdToHtml(text) + (cursor ? '<span class="cursor"></span>' : '');
+    el.scrollTop = el.scrollHeight;
+  }
+
+  async function runStream(path, body, outId, startId, stopId) {
+    if (!body.content || !body.content.trim()) { QA.toast('请先填写内容', 'error'); return; }
+    if (controller) controller.abort();
+    controller = new AbortController();
+    var out = $(outId);
+    var fullText = '';
+    renderOut(out, '', true);
+    setGenerating(true, startId, stopId);
+    await QA.stream(path, body, {
+      signal: controller.signal,
+      onDelta: function (piece) {
+        fullText += piece;
+        renderOut(out, fullText, true);
+      },
+      onDone: function () { renderOut(out, fullText, false); },
+      onError: function (e) {
+        renderOut(out, fullText, false);
+        out.innerHTML += '<div class="alert alert-error" style="margin-top:10px">' + QA.esc(QA.errMsg(e)) + '</div>';
+        QA.toast(QA.errMsg(e), 'error');
+      }
+    });
+    if (generating) {
+      renderOut(out, fullText, false);
+      setGenerating(false, startId, stopId);
+    }
+    controller = null;
+    loadUsage();
+  }
+
+  function stopGeneration() {
+    if (controller) controller.abort();
+    controller = null;
+    generating = false;
+    setGenerating(false, 'btn-analyze', 'btn-stop-analyze');
+    setGenerating(false, 'btn-debug', 'btn-stop-debug');
+    ['out-analyze', 'out-debug'].forEach(function (id) {
+      var el = $(id);
+      var c = el.querySelector('.cursor');
+      if (c) c.remove();
+    });
+    QA.toast('已停止生成（未写入半截内容）', 'info');
+    loadUsage();
+  }
+
+  /* -------------------------- 标签建议（非流式） -------------------------- */
+  async function runTags() {
+    var content = $('in-tags').value;
+    if (!content.trim()) { QA.toast('请先填写题面文本', 'error'); return; }
+    var out = $('out-tags');
+    out.innerHTML = QA.loading('正在请求标签建议…');
+    try {
+      var r = await QA.post('/api/ai/suggest-tags', { content: content, problem_id: problemId() });
+      if (!r.ok) {
+        out.innerHTML = '<div class="alert alert-warn">' + QA.esc(r.error || '模型未返回合法 JSON，可重试') + '</div>';
+        return;
+      }
+      var chips = (r.suggestions || []).map(function (s) { return '<span class="chip chip-primary">' + QA.esc(s) + '</span>'; }).join('');
+      out.innerHTML =
+        '<div class="alert alert-info">以下为 <strong>AI 建议</strong>，需人工确认后才参与组题筛选（当前 verified=' + QA.esc(r.verified) + '）。</div>' +
+        '<div class="grid grid-3" style="margin-bottom:12px">' +
+          '<div class="stat"><div class="stat-label">难度建议</div><div class="stat-value">' + QA.difficultyBadge(r.difficulty_level) + '</div></div>' +
+          '<div class="stat"><div class="stat-label">写入待确认关联</div><div class="stat-value">' + QA.esc(r.written) + '<small>条</small></div></div>' +
+          '<div class="stat"><div class="stat-label">状态</div><div class="stat-value" style="font-size:15px">' + QA.badge('待人工确认', 'badge-warn') + '</div></div>' +
+        '</div>' +
+        '<div class="section-title">建议知识点</div>' +
+        '<div class="tags">' + (chips || '<span class="muted">无建议</span>') + '</div>' +
+        (r.reason ? '<div class="section-title" style="margin-top:12px">理由</div><div class="notice">' + QA.esc(r.reason) + '</div>' : '') +
+        (r.notice ? '<div class="hint" style="margin-top:8px">' + QA.esc(r.notice) + '</div>' : '');
+      QA.toast('标签建议已返回，请人工确认', 'success');
+      loadUsage();
+    } catch (e) {
+      out.innerHTML = '<div class="alert alert-error">请求失败：' + QA.esc(QA.errMsg(e)) + '</div>';
+      QA.toast(QA.errMsg(e), 'error');
+    }
+  }
+
+  /* -------------------------- 配置引导 / 用量 / 测试 -------------------------- */
+  async function loadConfig() {
+    try {
+      var c = await QA.get('/api/settings/ai');
+      if (!c.api_key_configured) {
+        $('ai-guide').innerHTML = '<div class="alert alert-warn">尚未配置 DeepSeek API Key，AI 功能不可用。' +
+          '请前往 <a href="/settings">设置 → AI 参数</a> 填写密钥；核心刷题功能不受影响。</div>';
+      } else {
+        $('ai-guide').innerHTML = '<div class="alert alert-ok">AI 已配置 · 当前模型 <strong>' + QA.esc(c.effective_model) + '</strong>' +
+          (c.model_is_deprecated ? ' <span class="badge badge-danger">该模型已停用，请更换</span>' : '') +
+          ' · 密钥 ' + QA.esc(c.api_key_masked || '（已配置）') + '</div>';
+      }
+    } catch (e) {
+      $('ai-guide').innerHTML = '<div class="alert alert-error">读取 AI 配置失败：' + QA.esc(QA.errMsg(e)) + '</div>';
+    }
+  }
+
+  async function loadUsage() {
+    var box = $('usage-box');
+    box.innerHTML = QA.loading('正在读取用量…');
+    try {
+      var u = await QA.get('/api/ai/usage');
+      $('usage-sub').textContent = '累计 ' + u.total_calls + ' 次调用，成功 ' + u.ok_calls + ' 次';
+      var cards = [
+        ['总调用', u.total_calls, '次'], ['成功调用', u.ok_calls, '次'],
+        ['输入 tokens', u.prompt_tokens, ''], ['输出 tokens', u.completion_tokens, ''],
+        ['估算费用', '$' + u.estimated_cost_usd, 'USD']
+      ];
+      var html = '<div class="grid grid-auto">';
+      cards.forEach(function (c) { html += '<div class="stat"><div class="stat-label">' + QA.esc(c[0]) + '</div><div class="stat-value">' + QA.esc(c[1]) + '<small>' + QA.esc(c[2]) + '</small></div></div>'; });
+      html += '</div>';
+      var recent = u.recent || [];
+      if (recent.length) {
+        html += '<div class="section-title" style="margin-top:14px">最近调用</div><div class="table-wrap"><table><thead><tr>' +
+          '<th>ID</th><th>场景</th><th>模型</th><th>状态</th><th>tokens</th><th>时间</th></tr></thead><tbody>' +
+          recent.map(function (r) {
+            return '<tr><td class="mono muted">#' + r.id + '</td><td>' + QA.esc(r.scene) + '</td>' +
+              '<td class="mono small">' + QA.esc(r.model) + '</td><td>' + QA.statusBadge(r.status) + '</td>' +
+              '<td>' + QA.esc(r.prompt_tokens) + '/' + QA.esc(r.completion_tokens) + '</td>' +
+              '<td class="small muted">' + QA.esc(QA.fmtDate(r.created_at || r.finished_at)) + '</td></tr>';
+          }).join('') + '</tbody></table></div>';
+      }
+      box.innerHTML = html;
+    } catch (e) { QA.showError(box, e); }
+  }
+
+  async function testConnection() {
+    var box = $('test-result');
+    box.innerHTML = QA.loading('正在测试连接…');
+    try {
+      var r = await QA.post('/api/ai/test', {});
+      box.innerHTML = '<div class="alert alert-ok">连接成功 · 模型 ' + QA.esc(r.model) + ' · 回复：' + QA.esc(r.reply) + '</div>';
+      QA.toast('AI 连接测试成功', 'success');
+    } catch (e) {
+      box.innerHTML = '<div class="alert alert-error">连接失败：' + QA.esc(QA.errMsg(e)) + '</div>';
+      QA.toast(QA.errMsg(e), 'error');
+    }
+  }
+
+  $('ai-tabs').addEventListener('click', function (e) {
+    var t = e.target.closest('.tab');
+    if (!t) return;
+    Array.prototype.forEach.call(this.querySelectorAll('.tab'), function (x) { x.classList.remove('active'); });
+    t.classList.add('active');
+    Array.prototype.forEach.call(document.querySelectorAll('.tab-panel'), function (p) { p.classList.remove('active'); });
+    $('panel-' + t.getAttribute('data-tab')).classList.add('active');
+  });
+
+  $('btn-analyze').onclick = function () {
+    runStream('/api/ai/analyze', { content: $('in-analyze').value, problem_id: problemId() },
+      'out-analyze', 'btn-analyze', 'btn-stop-analyze');
+  };
+  $('btn-debug').onclick = function () {
+    runStream('/api/ai/debug', {
+      content: $('in-debug').value,
+      phenomenon: $('in-phenomenon').value || '未说明',
+      problem_id: problemId()
+    }, 'out-debug', 'btn-debug', 'btn-stop-debug');
+  };
+  $('btn-stop-analyze').onclick = stopGeneration;
+  $('btn-stop-debug').onclick = stopGeneration;
+  $('btn-tags').onclick = runTags;
+  $('btn-test').onclick = testConnection;
+  $('btn-refresh-usage').onclick = loadUsage;
+
+  (async function init() {
+    try {
+      var res = await QA.get('/api/problems?page_size=200');
+      var sel = $('ai-problem');
+      (res.items || []).forEach(function (p) {
+        var o = document.createElement('option');
+        o.value = p.id; o.textContent = '#' + p.id + ' ' + p.title + ' · ' + QA.sourceLabel(p.source);
+        sel.appendChild(o);
+      });
+    } catch (e) { /* 题目下拉失败不影响 AI 面板 */ }
+    loadConfig();
+    loadUsage();
+  })();
+})();
+</script>
+{% endblock %}

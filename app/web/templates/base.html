@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ page_title }} · 刷题助手</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/style.css') }}">
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">刷</div>
+        <div class="brand-text">
+          <div class="brand-title">刷题助手</div>
+          <div class="brand-sub">本地单机 · v{{ version }}</div>
+        </div>
+      </div>
+      <nav class="nav" aria-label="主导航">
+        {% for key, label in pages.items() %}
+        <a class="nav-item{% if key == page %} active{% endif %}" href="/{{ '' if key == 'today' else key }}">
+          <span class="nav-dot"></span>{{ label }}
+        </a>
+        {% endfor %}
+      </nav>
+      <div class="sidebar-foot">
+        <div class="offline-tip"><span class="dot-ok"></span>离线可用</div>
+        <div class="sidebar-version">数据仅保存在本机</div>
+      </div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1 class="topbar-title">{{ page_title }}</h1>
+          <span class="topbar-page">{{ page }}</span>
+        </div>
+        <div class="topbar-right">
+          <span class="topbar-meta">刷题学习助手 · v{{ version }}</span>
+        </div>
+      </header>
+      <main class="content">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+  </div>
+
+  <div id="qa-toast-root" class="toast-root" aria-live="polite"></div>
+  <div id="qa-modal-root"></div>
+
+  <script src="{{ url_for('static', path='/app.js') }}"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

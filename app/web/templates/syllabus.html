@@ -1,0 +1,350 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="alert alert-warn" style="margin-bottom:16px">
+  <strong>重要：</strong>候选题单在<strong>确认前不写入每日计划</strong>。请先预览、剔除、调整顺序，确认并激活后，计划生成才会按此队列取新题。
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <div><div class="card-title">大纲版本</div><div class="card-desc" id="syllabi-sub">加载中…</div></div>
+    <div class="row">
+      <button class="btn btn-primary btn-sm" id="btn-new-syllabus">+ 新建大纲</button>
+      <button class="btn btn-sm" id="btn-refresh-syllabi">刷新</button>
+    </div>
+  </div>
+  <div id="syllabi-box"></div>
+</div>
+
+<div class="card">
+  <div class="card-head"><div><div class="card-title">生成候选题单</div><div class="card-desc">按大纲知识点 + 难度区间筛选未学题目，生成 draft 题单</div></div></div>
+  <form class="inline-form" id="gen-form">
+    <div class="field"><label>大纲版本</label><select name="syllabus_id" id="gen-syllabus"></select></div>
+    <div class="field"><label>难度下限</label><select name="difficulty_min"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></div>
+    <div class="field"><label>难度上限</label><select name="difficulty_max"><option>1</option><option>2</option><option>3</option><option>4</option><option selected>5</option></select></div>
+    <div class="field"><label>上限题数</label><input type="number" name="limit" value="100" min="1" max="1000"></div>
+    <div class="field"><label>题单名称（可选）</label><input type="text" name="name" placeholder="留空自动生成"></div>
+    <button type="submit" class="btn btn-primary btn-sm">生成候选题单</button>
+  </form>
+  <div class="hint">生成结果仅为草稿（draft），需人工确认；已学题目不会进入候选。</div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <div><div class="card-title">题单列表</div><div class="card-desc" id="lists-sub">加载中…</div></div>
+    <button class="btn btn-sm" id="btn-refresh-lists">刷新</button>
+  </div>
+  <div id="lists-box"></div>
+</div>
+
+<div class="card" id="detail-card" hidden>
+  <div class="card-head">
+    <div><div class="card-title" id="detail-title">题单详情</div><div class="card-desc" id="detail-sub"></div></div>
+    <div class="row">
+      <button class="btn btn-sm" id="btn-save-order">保存顺序</button>
+      <button class="btn btn-sm btn-primary" id="btn-confirm-list">确认题单</button>
+      <button class="btn btn-sm" id="btn-activate-list">激活题单</button>
+      <button class="btn btn-sm" id="btn-close-detail">收起</button>
+    </div>
+  </div>
+  <div id="detail-box"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+  var $ = QA.el;
+  var syllabi = [];
+  var lists = [];
+  var flatNodes = [];
+  var current = null;      /* 当前题单详情 */
+  var orderDirty = false;
+
+  function nodeSelectHtml(selected) {
+    return flatNodes.map(function (n) {
+      return '<option value="' + n.id + '"' + (String(selected) === String(n.id) ? ' selected' : '') + '>' + QA.esc(n.name) + '</option>';
+    }).join('');
+  }
+
+  /* -------------------------- 大纲 -------------------------- */
+  function syllabusCard(s) {
+    var rows = (s.items || []).map(function (it) {
+      return '<tr><td>' + QA.esc(it.node_name || '?') + '</td>' +
+        '<td>' + QA.esc(it.difficulty_min) + ' – ' + QA.esc(it.difficulty_max) + '</td>' +
+        '<td>' + QA.esc(it.priority) + '</td><td>' + QA.esc(it.coefficient) + '</td></tr>';
+    }).join('');
+    return '<div class="list-item">' +
+      '<div class="row-between"><div><strong>' + QA.esc(s.name) + '</strong> ' +
+        QA.badge('v' + QA.esc(s.version), 'badge-primary') + ' ' +
+        (s.is_active ? QA.badge('启用', 'badge-success') : QA.badge('停用', 'badge-muted')) +
+        '<div class="small muted" style="margin-top:4px">' + QA.esc(s.track || '') + ' · ' + QA.esc(s.group_name || '') +
+        ' · 生效 ' + QA.esc(QA.fmtDate(s.effective_date, false)) + '</div></div>' +
+        (s.source_url ? QA.externalLink(s.source_url, '大纲来源 ↗', 'small') : '') + '</div>' +
+      (s.description ? '<div class="small muted" style="margin-top:6px">' + QA.esc(s.description) + '</div>' : '') +
+      '<div class="table-wrap" style="margin-top:10px"><table><thead><tr>' +
+        '<th>知识点</th><th>难度区间</th><th>优先级</th><th>系数</th></tr></thead><tbody>' +
+        (rows || '<tr><td colspan="4" class="muted">该大纲暂无条目</td></tr>') + '</tbody></table></div>' +
+    '</div>';
+  }
+
+  async function loadSyllabi() {
+    var box = $('syllabi-box');
+    box.innerHTML = QA.loading('正在加载大纲…');
+    try {
+      var res = await QA.get('/api/syllabi');
+      syllabi = res.items || [];
+      $('syllabi-sub').textContent = '共 ' + syllabi.length + ' 个大纲版本';
+      box.innerHTML = syllabi.length ? syllabi.map(syllabusCard).join('') : QA.empty('暂无大纲', '点击「新建大纲」创建版本并添加知识点条目。');
+      $('gen-syllabus').innerHTML = syllabi.length
+        ? syllabi.map(function (s) { return '<option value="' + s.id + '">' + QA.esc(s.name + ' ' + s.version) + '</option>'; }).join('')
+        : '<option value="">（请先新建大纲）</option>';
+    } catch (e) { QA.showError(box, e); }
+  }
+
+  function itemRowHtml(idx) {
+    return '<div class="row" data-item-row="' + idx + '" style="border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px">' +
+      '<div class="field" style="flex:2;min-width:150px;margin:0"><label>知识点</label><select name="node_id">' + nodeSelectHtml('') + '</select></div>' +
+      '<div class="field" style="flex:1;margin:0"><label>难度下限</label><input type="number" name="difficulty_min" value="1" min="1" max="5"></div>' +
+      '<div class="field" style="flex:1;margin:0"><label>难度上限</label><input type="number" name="difficulty_max" value="5" min="1" max="5"></div>' +
+      '<div class="field" style="flex:1;margin:0"><label>优先级</label><input type="number" name="priority" value="5" min="1"></div>' +
+      '<div class="field" style="flex:1;margin:0"><label>系数 1–10</label><input type="number" name="coefficient" value="5" min="1" max="10"></div>' +
+      '<button type="button" class="btn btn-xs" data-act="remove-row">移除</button>' +
+    '</div>';
+  }
+
+  function openNewSyllabus() {
+    var body = QA.openModal('新建大纲版本',
+      '<form id="syl-form">' +
+        '<div class="form-row">' +
+          '<div class="field"><label>名称 *</label><input type="text" name="name" required placeholder="如 蓝桥杯软件赛大纲"></div>' +
+          '<div class="field"><label>版本 *</label><input type="text" name="version" required placeholder="如 2026"></div>' +
+        '</div>' +
+        '<div class="form-row">' +
+          '<div class="field"><label>赛道</label><input type="text" name="track" value="软件赛"></div>' +
+          '<div class="field"><label>组别</label><input type="text" name="group_name" value="大学 B 组"></div>' +
+        '</div>' +
+        '<div class="form-row">' +
+          '<div class="field"><label>生效日期</label><input type="date" name="effective_date"></div>' +
+          '<div class="field"><label>来源 URL（可选）</label><input type="text" name="source_url" placeholder="http(s) 链接"></div>' +
+        '</div>' +
+        '<div class="field"><label>描述</label><textarea name="description" rows="2"></textarea></div>' +
+        '<label class="check"><input type="checkbox" name="is_active" checked> 设为启用</label>' +
+        '<div class="hr"></div>' +
+        '<div class="section-title">大纲条目（知识点 / 难度区间 / 优先级 / 系数）</div>' +
+        '<div id="syl-items"></div>' +
+        '<button type="button" class="btn btn-sm" id="syl-add-row">+ 添加条目</button>' +
+        '<div class="modal-actions"><button type="button" class="btn" id="syl-cancel">取消</button>' +
+        '<button type="submit" class="btn btn-primary">创建大纲</button></div>' +
+      '</form>', true);
+    if (!body) return;
+    var itemsBox = body.querySelector('#syl-items');
+    var counter = 0;
+    function addRow() { itemsBox.insertAdjacentHTML('beforeend', itemRowHtml(counter++)); }
+    addRow();
+    body.querySelector('#syl-add-row').onclick = addRow;
+    itemsBox.addEventListener('click', function (e) {
+      if (e.target.closest('[data-act="remove-row"]')) {
+        var row = e.target.closest('[data-item-row]');
+        if (row) row.remove();
+      }
+    });
+    body.querySelector('#syl-cancel').onclick = QA.closeModal;
+    body.querySelector('#syl-form').onsubmit = async function (e) {
+      e.preventDefault();
+      var fd = new FormData(e.target);
+      var items = [];
+      itemsBox.querySelectorAll('[data-item-row]').forEach(function (row) {
+        var get = function (n) { var el = row.querySelector('[name="' + n + '"]'); return el ? el.value : ''; };
+        items.push({
+          node_id: Number(get('node_id')),
+          difficulty_min: Number(get('difficulty_min') || 1),
+          difficulty_max: Number(get('difficulty_max') || 5),
+          priority: Number(get('priority') || 5),
+          coefficient: Number(get('coefficient') || 5)
+        });
+      });
+      var payload = {
+        name: String(fd.get('name') || '').trim(),
+        version: String(fd.get('version') || '').trim(),
+        track: String(fd.get('track') || ''),
+        group_name: String(fd.get('group_name') || ''),
+        source_url: String(fd.get('source_url') || ''),
+        description: String(fd.get('description') || ''),
+        effective_date: String(fd.get('effective_date') || ''),
+        is_active: fd.get('is_active') === 'on',
+        items: items
+      };
+      if (!payload.name || !payload.version) { QA.toast('名称与版本必填', 'error'); return; }
+      if (!payload.effective_date) delete payload.effective_date;
+      try {
+        await QA.post('/api/syllabi', payload);
+        QA.toast('大纲已创建', 'success');
+        QA.closeModal();
+        loadSyllabi();
+      } catch (err) { QA.toast(QA.errMsg(err), 'error'); }
+    };
+  }
+
+  /* -------------------------- 题单 -------------------------- */
+  async function loadLists() {
+    var box = $('lists-box');
+    box.innerHTML = QA.loading('正在加载题单…');
+    try {
+      var res = await QA.get('/api/problem-lists');
+      lists = res.items || [];
+      $('lists-sub').textContent = '共 ' + lists.length + ' 个题单';
+      if (!lists.length) { box.innerHTML = QA.empty('暂无题单', '在上方选择大纲并点击「生成候选题单」。'); return; }
+      box.innerHTML = '<div class="table-wrap"><table><thead><tr>' +
+        '<th>ID</th><th>名称</th><th>状态</th><th>题数</th><th>剩余</th><th>激活</th><th>操作</th>' +
+        '</tr></thead><tbody>' + lists.map(function (l) {
+          return '<tr><td class="mono muted">#' + l.id + '</td>' +
+            '<td><div class="cell-title">' + QA.esc(l.name) + '</div><div class="cell-sub">' + QA.esc(l.note || '') + '</div></td>' +
+            '<td>' + QA.statusBadge(l.status) + '</td>' +
+            '<td>' + QA.esc(l.count) + '</td><td>' + QA.esc(l.remaining) + '</td>' +
+            '<td>' + (l.is_active ? QA.badge('已激活', 'badge-success') : QA.badge('未激活', 'badge-muted')) + '</td>' +
+            '<td><button class="btn btn-xs" data-act="open-list" data-id="' + l.id + '">查看 / 编辑</button></td></tr>';
+        }).join('') + '</tbody></table></div>';
+    } catch (e) { QA.showError(box, e); }
+  }
+
+  function renderDetail() {
+    if (!current) return;
+    var d = current;
+    $('detail-title').textContent = '#' + d.id + ' ' + d.name;
+    $('detail-sub').textContent = QA.statusLabel(d.status) + ' · ' + d.count + ' 题 · ' + (d.is_active ? '已激活' : '未激活');
+    $('btn-confirm-list').disabled = (d.status !== 'draft');
+    $('btn-activate-list').disabled = (d.status !== 'confirmed');
+    $('btn-save-order').disabled = (d.status === 'confirmed');
+    var items = d.items || [];
+    if (!items.length) {
+      $('detail-box').innerHTML = QA.empty('题单为空', '空题单不能确认，请重新生成候选题单。');
+      return;
+    }
+    var rows = items.map(function (it, i) {
+      var p = it.problem || {};
+      return '<tr data-iid="' + it.id + '">' +
+        '<td class="mono muted">' + (it.position) + '</td>' +
+        '<td><div class="cell-title">' + QA.esc(p.title || ('题目 #' + it.problem_id)) + '</div>' +
+          '<div class="cell-sub">' + QA.esc(QA.sourceLabel(p.source)) + ' · ' + QA.esc(p.source_key || '') + ' ' +
+          (p.url ? QA.externalLink(p.url, '↗', 'small') : '') + '</div></td>' +
+        '<td>' + QA.difficultyBadge(p.difficulty_level) + '</td>' +
+        '<td>' + (it.consumed ? QA.badge('已消耗', 'badge-muted') : QA.badge('待用', 'badge-success')) + '</td>' +
+        '<td><div class="table-actions">' +
+          '<button class="btn btn-xs" data-act="up" data-i="' + i + '"' + (d.status === 'confirmed' ? ' disabled' : '') + '>↑ 上移</button>' +
+          '<button class="btn btn-xs" data-act="down" data-i="' + i + '"' + (d.status === 'confirmed' ? ' disabled' : '') + '>↓ 下移</button>' +
+          '<button class="btn btn-xs" data-act="remove-item" data-iid="' + it.id + '"' + (d.status === 'confirmed' ? ' disabled' : '') + '>剔除</button>' +
+        '</div></td></tr>';
+    }).join('');
+    $('detail-box').innerHTML =
+      (orderDirty ? '<div class="alert alert-warn">顺序已调整但尚未保存，请点击「保存顺序」。</div>' : '') +
+      (d.status === 'confirmed' ? '<div class="alert alert-info">已确认题单不可剔除或调序；如需修改请重新生成候选题单。</div>' : '') +
+      '<div class="table-wrap"><table><thead><tr><th>序</th><th>题目</th><th>难度</th><th>状态</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+  }
+
+  async function openList(id) {
+    $('detail-card').hidden = false;
+    $('detail-box').innerHTML = QA.loading('正在加载题单详情…');
+    try {
+      current = await QA.get('/api/problem-lists/' + id);
+      orderDirty = false;
+      renderDetail();
+      $('detail-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (e) { QA.showError($('detail-box'), e); }
+  }
+
+  $('lists-box').addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-act="open-list"]');
+    if (btn) openList(btn.getAttribute('data-id'));
+  });
+
+  $('detail-box').addEventListener('click', async function (e) {
+    var btn = e.target.closest('[data-act]');
+    if (!btn || !current) return;
+    var act = btn.getAttribute('data-act');
+    if (act === 'up' || act === 'down') {
+      var i = Number(btn.getAttribute('data-i'));
+      var j = act === 'up' ? i - 1 : i + 1;
+      var items = current.items || [];
+      if (j < 0 || j >= items.length) return;
+      var tmp = items[i]; items[i] = items[j]; items[j] = tmp;
+      items.forEach(function (it, idx) { it.position = idx; });
+      orderDirty = true;
+      renderDetail();
+    } else if (act === 'remove-item') {
+      try {
+        await QA.del('/api/problem-lists/' + current.id + '/items/' + btn.getAttribute('data-iid'));
+        QA.toast('条目已剔除', 'success');
+        await openList(current.id);
+        loadLists();
+      } catch (err) { QA.toast(QA.errMsg(err), 'error'); }
+    }
+  });
+
+  $('btn-save-order').onclick = async function () {
+    if (!current) return;
+    var order = (current.items || []).map(function (it) { return it.id; });
+    try {
+      var res = await QA.put('/api/problem-lists/' + current.id + '/order', { order: order });
+      current = res;
+      orderDirty = false;
+      QA.toast('顺序已保存', 'success');
+      renderDetail();
+      loadLists();
+    } catch (e) { QA.toast(QA.errMsg(e), 'error'); }
+  };
+  $('btn-confirm-list').onclick = async function () {
+    if (!current) return;
+    try {
+      var res = await QA.put('/api/problem-lists/' + current.id + '/confirm', {});
+      current = res; orderDirty = false;
+      QA.toast('题单已确认，但未写入每日计划；请点击「激活题单」', 'success');
+      renderDetail(); loadLists();
+    } catch (e) { QA.toast(QA.errMsg(e), 'error'); }
+  };
+  $('btn-activate-list').onclick = async function () {
+    if (!current) return;
+    try {
+      var res = await QA.put('/api/problem-lists/' + current.id + '/activate', {});
+      current = res;
+      QA.toast('题单已激活，后续生成计划将按此队列取新题', 'success');
+      renderDetail(); loadLists();
+    } catch (e) { QA.toast(QA.errMsg(e), 'error'); }
+  };
+  $('btn-close-detail').onclick = function () { $('detail-card').hidden = true; current = null; };
+
+  $('gen-form').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    var fd = new FormData(e.target);
+    var sid = Number(fd.get('syllabus_id') || 0);
+    if (!sid) { QA.toast('请先选择一个大纲版本', 'error'); return; }
+    var payload = {
+      difficulty_min: Number(fd.get('difficulty_min') || 1),
+      difficulty_max: Number(fd.get('difficulty_max') || 5),
+      limit: Number(fd.get('limit') || 100),
+      name: String(fd.get('name') || '')
+    };
+    try {
+      var res = await QA.post('/api/syllabi/' + sid + '/generate-list', payload);
+      QA.toast('已生成候选题单 #' + res.id + '（' + res.count + ' 题）', 'success');
+      await loadLists();
+      openList(res.id);
+    } catch (err) { QA.toast(QA.errMsg(err), 'error'); }
+  });
+
+  $('btn-new-syllabus').onclick = openNewSyllabus;
+  $('btn-refresh-syllabi').onclick = loadSyllabi;
+  $('btn-refresh-lists').onclick = loadLists;
+
+  (async function init() {
+    try {
+      var r = await QA.get('/api/knowledge-nodes/flat');
+      flatNodes = r.items || [];
+    } catch (e) { QA.toast(QA.errMsg(e), 'error'); }
+    loadSyllabi();
+    loadLists();
+  })();
+})();
+</script>
+{% endblock %}

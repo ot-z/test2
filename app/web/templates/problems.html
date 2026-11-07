@@ -1,0 +1,434 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="notice">
+  <strong>题库目录</strong> · 仅保存题目元信息（来源、题号、标题、难度、标签），不含题面原文。外链在新标签页打开。
+  批量导入仅写元信息，<strong>绝不自动生成单题题面快照</strong>。
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <div>
+      <div class="card-title">筛选</div>
+      <div class="card-desc">来源 / 难度 / 知识点 / 关键字 / 是否已学</div>
+    </div>
+    <div class="row">
+      <button class="btn btn-primary btn-sm" id="btn-create">+ 新增题目</button>
+      <button class="btn btn-sm" id="btn-import">批量导入</button>
+      <button class="btn btn-sm" id="btn-refresh">刷新</button>
+    </div>
+  </div>
+  <div class="filter-grid">
+    <div class="field"><label>关键字（标题 / 题号）</label><input type="text" id="f-keyword" placeholder="如 P1001 / 动态规划"></div>
+    <div class="field"><label>来源</label><select id="f-source"><option value="">全部来源</option></select></div>
+    <div class="field"><label>难度下限</label><select id="f-dmin"><option value="">不限</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></div>
+    <div class="field"><label>难度上限</label><select id="f-dmax"><option value="">不限</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></div>
+    <div class="field"><label>知识点（已确认标签）</label><select id="f-node"><option value="">全部知识点</option></select></div>
+    <div class="field"><label>是否已学</label><select id="f-learned"><option value="">全部</option><option value="true">已学</option><option value="false">未学</option></select></div>
+    <div class="field"><label>排序</label><select id="f-sort"><option value="id">按 ID</option><option value="difficulty">按难度</option><option value="title">按标题</option><option value="source_key">按题号</option></select></div>
+    <div class="field"><label>每页条数</label><select id="f-size"><option>20</option><option>10</option><option>50</option><option>100</option></select></div>
+    <div class="field"><label class="check"><input type="checkbox" id="f-inactive"> 显示已停用题目</label></div>
+  </div>
+  <div class="toolbar" style="margin-top:14px;margin-bottom:0">
+    <button class="btn btn-primary btn-sm" id="btn-search">查询</button>
+    <button class="btn btn-sm" id="btn-reset">重置</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <div><div class="card-title">题目列表</div><div class="card-desc" id="list-sub">加载中…</div></div>
+  </div>
+  <div class="table-wrap" id="problems-table"></div>
+  <div class="pager" id="pager"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+  var $ = QA.el;
+  var tableBox = $('problems-table');
+  var pager = $('pager');
+  var listSub = $('list-sub');
+  var state = { page: 1, page_size: 20, pages: 1, total: 0 };
+  var flatNodes = [];
+  var importPayload = null;
+
+  function fillSelect(el, items, valueKey, labelKey, placeholder) {
+    var html = placeholder ? '<option value="">' + QA.esc(placeholder) + '</option>' : '';
+    items.forEach(function (it) {
+      html += '<option value="' + QA.esc(it[valueKey]) + '">' + QA.esc(it[labelKey]) + '</option>';
+    });
+    el.innerHTML = html;
+  }
+
+  function filters() {
+    return {
+      page: state.page,
+      page_size: state.page_size,
+      keyword: $('f-keyword').value.trim(),
+      source: $('f-source').value,
+      difficulty_min: $('f-dmin').value,
+      difficulty_max: $('f-dmax').value,
+      node_id: $('f-node').value,
+      learned: $('f-learned').value,
+      sort: $('f-sort').value,
+      include_inactive: $('f-inactive').checked ? 'true' : ''
+    };
+  }
+
+  function rowHtml(p) {
+    var tags = (p.external_tags || []).map(function (t) { return '<span class="chip">' + QA.esc(t) + '</span>'; }).join('');
+    var status = (p.is_active ? QA.badge('启用', 'badge-success') : QA.badge('已停用', 'badge-muted')) +
+      ' ' + QA.badge(QA.statusLabel(p.sync_status), p.sync_status === 'stale' ? 'badge-warn' : 'badge-muted');
+    var link = p.url ? QA.externalLink(p.url, '↗ 原题', 'small') : '<span class="small muted">无外链</span>';
+    return '<tr data-row="' + p.id + '">' +
+      '<td class="mono muted">#' + p.id + '</td>' +
+      '<td><div class="cell-sub">' + QA.esc(QA.sourceLabel(p.source)) + '</div><div class="mono">' + QA.esc(p.source_key) + '</div></td>' +
+      '<td><div class="cell-title">' + QA.esc(p.title) + '</div><div class="cell-sub">' + link + '</div></td>' +
+      '<td>' + QA.difficultyBadge(p.difficulty_level) + '</td>' +
+      '<td class="tags">' + (tags || '<span class="muted small">—</span>') + '</td>' +
+      '<td>' + status + '</td>' +
+      '<td><div class="table-actions">' +
+        '<button class="btn btn-xs" data-act="detail" data-id="' + p.id + '">详情</button>' +
+        '<button class="btn btn-xs" data-act="edit" data-id="' + p.id + '">编辑</button>' +
+        '<button class="btn btn-xs" data-act="deactivate" data-id="' + p.id + '">停用</button>' +
+      '</div></td>' +
+    '</tr>';
+  }
+
+  async function loadList() {
+    tableBox.innerHTML = QA.loading('正在加载题目…');
+    try {
+      var data = await QA.get('/api/problems' + QA.query(filters()));
+      state.page = data.page; state.pages = data.pages; state.total = data.total; state.page_size = data.page_size;
+      listSub.textContent = '共 ' + data.total + ' 题 · 第 ' + data.page + '/' + (data.pages || 1) + ' 页';
+      if (!data.items || !data.items.length) {
+        tableBox.innerHTML = QA.empty('没有符合条件的题目', '试试重置筛选条件，或通过「新增题目 / 批量导入」添加题目。');
+        pager.innerHTML = '';
+        return;
+      }
+      tableBox.innerHTML = '<table><thead><tr>' +
+        '<th>ID</th><th>来源 / 题号</th><th>标题</th><th>难度</th><th>标签</th><th>状态</th><th>操作</th>' +
+        '</tr></thead><tbody>' + data.items.map(rowHtml).join('') + '</tbody></table>';
+      pager.innerHTML =
+        '<span class="small muted">共 ' + data.total + ' 条，每页 ' + data.page_size + ' 条</span>' +
+        '<div class="row">' +
+          '<button class="btn btn-sm" id="pg-prev"' + (state.page <= 1 ? ' disabled' : '') + '>上一页</button>' +
+          '<span class="small">' + state.page + ' / ' + (data.pages || 1) + '</span>' +
+          '<button class="btn btn-sm" id="pg-next"' + (state.page >= (data.pages || 1) ? ' disabled' : '') + '>下一页</button>' +
+        '</div>';
+      var prev = $('pg-prev'), next = $('pg-next');
+      if (prev) prev.onclick = function () { if (state.page > 1) { state.page--; loadList(); } };
+      if (next) next.onclick = function () { if (state.page < state.pages) { state.page++; loadList(); } };
+    } catch (e) {
+      QA.showError(tableBox, e);
+      listSub.textContent = '加载失败';
+    }
+  }
+
+  /* -------------------------- 新增 / 编辑 -------------------------- */
+  function problemFormHtml(p) {
+    var creating = !p;
+    p = p || {};
+    var tags = Array.isArray(p.external_tags) ? p.external_tags.join(', ') : (p.external_tags || '');
+    return '<form id="problem-form">' +
+      '<div class="form-row">' +
+        (creating
+          ? '<div class="field"><label>来源 *</label><select name="source">' + QA.sourceOptions(p.source || 'luogu') + '</select></div>' +
+            '<div class="field"><label>题号 source_key *</label><input type="text" name="source_key" required placeholder="如 P1001 / 1A"></div>'
+          : '<div class="field"><label>来源 / 题号（不可修改）</label><input type="text" value="' + QA.esc(QA.sourceLabel(p.source) + ' · ' + (p.source_key || '')) + '" disabled></div>') +
+      '</div>' +
+      '<div class="field"><label>标题</label><input type="text" name="title" value="' + QA.esc(p.title || '') + '" placeholder="留空则用题号作为标题"></div>' +
+      '<div class="form-row">' +
+        '<div class="field"><label>原题链接 URL</label><input type="text" name="url" value="' + QA.esc(p.url || '') + '" placeholder="http(s) 链接，留空可自动生成"><div class="field-help">仅接受 http(s) 链接；留空时按来源与题号自动推导。</div></div>' +
+        '<div class="field"><label>难度等级（1–5）</label><select name="difficulty_level">' +
+          [1,2,3,4,5].map(function (n) { return '<option value="' + n + '"' + ((p.difficulty_level || 3) === n ? ' selected' : '') + '>' + n + ' · ' + QA.difficultyLabel(n) + '</option>'; }).join('') +
+        '</select></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="field"><label>原始难度描述</label><input type="text" name="difficulty_raw" value="' + QA.esc(p.difficulty_raw || '') + '" placeholder="如 普及 / 1600"></div>' +
+        '<div class="field"><label>外部标签（英文逗号分隔）</label><input type="text" name="external_tags" value="' + QA.esc(tags) + '" placeholder="如 dp, greedy"></div>' +
+      '</div>' +
+      '<div class="field"><label>备注 note</label><textarea name="note" rows="2">' + QA.esc(p.note || '') + '</textarea></div>' +
+      '<div class="field"><label>摘要 summary（非题面原文）</label><textarea name="summary" rows="2">' + QA.esc(p.summary || '') + '</textarea></div>' +
+      (creating ? '' : '<label class="check"><input type="checkbox" name="is_active"' + (p.is_active !== false ? ' checked' : '') + '> 启用该题目</label>') +
+      '<div class="modal-actions"><button type="button" class="btn" id="pf-cancel">取消</button>' +
+      '<button type="submit" class="btn btn-primary">' + (creating ? '创建题目' : '保存修改') + '</button></div>' +
+    '</form>';
+  }
+
+  function openProblemForm(p) {
+    var creating = !p;
+    var body = QA.openModal(creating ? '新增题目' : '编辑题目 #' + p.id, problemFormHtml(p));
+    if (!body) return;
+    body.querySelector('#pf-cancel').onclick = QA.closeModal;
+    body.querySelector('#problem-form').onsubmit = async function (e) {
+      e.preventDefault();
+      var fd = new FormData(e.target);
+      var payload = {
+        title: String(fd.get('title') || ''),
+        url: String(fd.get('url') || ''),
+        difficulty_raw: String(fd.get('difficulty_raw') || ''),
+        difficulty_level: Number(fd.get('difficulty_level') || 3),
+        external_tags: String(fd.get('external_tags') || ''),
+        note: String(fd.get('note') || ''),
+        summary: String(fd.get('summary') || '')
+      };
+      if (creating) {
+        payload.source = String(fd.get('source'));
+        payload.source_key = String(fd.get('source_key') || '').trim();
+        if (!payload.source_key) { QA.toast('题号不能为空', 'error'); return; }
+      } else {
+        payload.is_active = fd.get('is_active') === 'on';
+      }
+      try {
+        await (creating ? QA.post('/api/problems', payload) : QA.patch('/api/problems/' + p.id, payload));
+        QA.toast(creating ? '题目已创建' : '题目已更新', 'success');
+        QA.closeModal();
+        loadList();
+      } catch (err) { QA.toast(QA.errMsg(err), 'error'); }
+    };
+  }
+
+  /* -------------------------- 题目详情（可展开） -------------------------- */
+  function knowledgeHtml(k) {
+    return '<div class="list-item"><div class="row-between">' +
+      '<div><strong>' + QA.esc(k.name) + '</strong> <span class="muted small">' + QA.esc(QA.categoryLabel(k.category)) + '</span> ' +
+      QA.badge(k.confidence, k.confidence === 'ai' ? 'badge-warn' : 'badge-muted') + '</div>' +
+      '<div class="row">' +
+        (k.verified ? QA.badge('已确认', 'badge-success')
+          : '<button class="btn btn-xs btn-primary" data-act="verify" data-link="' + k.id + '">待确认 · 点击确认</button>') +
+      '</div></div></div>';
+  }
+
+  function snapshotHtml(pid, s) {
+    var link = s.source_url ? QA.externalLink(s.source_url, '来源 ↗', 'small') : '<span class="small muted">无来源 URL</span>';
+    return '<div class="list-item">' +
+      '<div class="row-between"><div class="small"><strong>#' + s.id + '</strong> · 保存时间 ' + QA.esc(QA.fmtDate(s.captured_at)) + ' · ' + link + '</div>' +
+      '<button class="btn btn-xs" data-act="del-snapshot" data-sid="' + s.id + '" data-pid="' + pid + '">删除</button></div>' +
+      '<pre style="margin-top:8px">' + QA.esc(s.content_preview || '') + (s.content_md && s.content_md.length > 120 ? ' …' : '') + '</pre>' +
+    '</div>';
+  }
+
+  async function renderDetail(pid, box) {
+    box.innerHTML = QA.loading('正在加载题目详情…');
+    try {
+      var d = await QA.get('/api/problems/' + pid);
+      var snaps = await QA.get('/api/problems/' + pid + '/snapshots');
+      var kHtml = (d.knowledge || []).length
+        ? d.knowledge.map(knowledgeHtml).join('')
+        : QA.empty('暂无知识点关联', '可在「知识点与标签」页维护映射，或在 AI 面板获取标签建议。');
+      var sHtml = (snaps.items || []).length
+        ? snaps.items.map(function (s) { return snapshotHtml(pid, s); }).join('')
+        : QA.empty('暂无题面快照', '快照仅由用户单题主动保存。');
+      box.innerHTML =
+        '<div class="alert alert-warn" style="margin-bottom:12px">单题题面快照<strong>仅本地保存、不参与任何导出</strong>（FR-28）。请勿在此粘贴受版权保护的完整题面。</div>' +
+        '<div class="grid grid-2">' +
+          '<div><div class="section-title">知识点关联（AI 未确认的需人工确认）</div>' + kHtml + '</div>' +
+          '<div><div class="section-title">题目元信息</div>' +
+            '<table><tbody>' +
+              '<tr><th>标题</th><td>' + QA.esc(d.title) + '</td></tr>' +
+              '<tr><th>来源 / 题号</th><td>' + QA.esc(QA.sourceLabel(d.source)) + ' · ' + QA.esc(d.source_key) + '</td></tr>' +
+              '<tr><th>难度</th><td>' + QA.difficultyBadge(d.difficulty_level) + ' <span class="small muted">' + QA.esc(d.difficulty_raw || '') + '</span></td></tr>' +
+              '<tr><th>同步状态</th><td>' + QA.statusBadge(d.sync_status) + '</td></tr>' +
+              '<tr><th>笔记 / 记录 / 快照</th><td>' + QA.esc(d.notes_count) + ' / ' + QA.esc(d.records_count) + ' / ' + QA.esc(d.snapshots_count) + '</td></tr>' +
+              '<tr><th>摘要</th><td>' + QA.esc(d.summary || '—') + '</td></tr>' +
+              '<tr><th>原题</th><td>' + (d.url ? QA.externalLink(d.url, '打开 ↗', 'small') : '—') + '</td></tr>' +
+            '</tbody></table></div>' +
+        '</div>' +
+        '<div class="hr"></div>' +
+        '<div class="section-title">单题题面快照（仅本地 · 不参与导出）</div>' + sHtml +
+        '<form class="record-form" id="snap-form-' + pid + '" data-pid="' + pid + '" style="margin-top:10px">' +
+          '<div class="field"><label>新增快照内容（Markdown / 纯文本）</label><textarea name="content_md" rows="3" required placeholder="仅保存你自己整理的内容"></textarea></div>' +
+          '<div class="form-row"><div class="field"><label>来源 URL</label><input type="text" name="source_url" value="' + QA.esc(d.url || '') + '" placeholder="留空则使用题目链接"></div>' +
+          '<div class="field" style="display:flex;align-items:flex-end"><button type="submit" class="btn btn-primary btn-sm">保存快照</button></div></div>' +
+        '</form>';
+    } catch (e) { QA.showError(box, e); }
+  }
+
+  function toggleDetail(pid, btn) {
+    var existing = $('detail-' + pid);
+    if (existing) { existing.remove(); btn.textContent = '详情'; return; }
+    var tr = document.createElement('tr');
+    tr.className = 'detail-row';
+    tr.id = 'detail-' + pid;
+    tr.innerHTML = '<td colspan="7"><div id="detail-content-' + pid + '"></div></td>';
+    btn.closest('tr').after(tr);
+    btn.textContent = '收起';
+    renderDetail(pid, $('detail-content-' + pid));
+  }
+
+  /* -------------------------- 批量导入 -------------------------- */
+  var IMPORT_HINT = '示例（附录 C 契约 JSON）：\n' +
+    '{\n  "schema_version": "1.0",\n  "problems": [\n' +
+    '    { "source": "luogu", "source_key": "P1001", "title": "A+B Problem",\n' +
+    '      "url": "https://www.luogu.com.cn/problem/P1001",\n' +
+    '      "difficulty_level": 1, "external_tags": ["模拟"], "confidence": "ai", "verified": false }\n' +
+    '  ]\n}\n' +
+    '也支持：每行一个题号（可带标题/链接），或带表头的 CSV。';
+
+  function buildImportPayload(text, source) {
+    var trimmed = text.trim();
+    var payload = { source: source };
+    try {
+      var parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) payload.data = parsed;
+      else if (parsed && typeof parsed === 'object') {
+        if (parsed.source_key) payload.data = [parsed];
+        else payload.data = parsed;
+      } else payload.text = trimmed;
+    } catch (e) { payload.text = trimmed; }
+    return payload;
+  }
+
+  function renderPreview(res) {
+    var dup = (res.duplicates || []).map(function (d) {
+      return '<tr><td>' + d.row + '</td><td>' + QA.esc(QA.sourceLabel(d.source)) + '</td><td class="mono">' + QA.esc(d.source_key) + '</td></tr>';
+    }).join('');
+    var fail = (res.failed || []).map(function (f) {
+      return '<tr><td>' + f.row + '</td><td>' + QA.esc(f.reason) + '</td></tr>';
+    }).join('');
+    var box = $('import-result');
+    box.innerHTML =
+      '<div class="grid grid-4" style="margin-bottom:12px">' +
+        '<div class="stat"><div class="stat-label">解析总数</div><div class="stat-value">' + QA.esc(res.total) + '</div></div>' +
+        '<div class="stat"><div class="stat-label">可新增</div><div class="stat-value" style="color:var(--success)">' + QA.esc(res.added) + '</div></div>' +
+        '<div class="stat"><div class="stat-label">重复</div><div class="stat-value" style="color:var(--warn)">' + QA.esc((res.duplicates || []).length) + '</div></div>' +
+        '<div class="stat"><div class="stat-label">失败</div><div class="stat-value" style="color:var(--danger)">' + QA.esc((res.failed || []).length) + '</div></div>' +
+      '</div>' +
+      '<div class="alert alert-info">预览模式（dry_run）未写入数据库。快照自动生成数：' + QA.esc(res.snapshots_created) + '（批量导入恒为 0）。</div>' +
+      '<div class="section-title">新增清单</div>' +
+      '<div class="notice">将新增 <strong>' + QA.esc(res.added) + '</strong> 条题目（后端预览仅返回数量，确认后事务化写入）。</div>' +
+      '<div class="section-title">重复清单</div>' +
+      (dup ? '<div class="table-wrap"><table><thead><tr><th>行</th><th>来源</th><th>题号</th></tr></thead><tbody>' + dup + '</tbody></table></div>' : '<div class="hint">无重复</div>') +
+      '<div class="section-title" style="margin-top:12px">失败清单</div>' +
+      (fail ? '<div class="table-wrap"><table><thead><tr><th>行</th><th>原因</th></tr></thead><tbody>' + fail + '</tbody></table></div>' : '<div class="hint">无失败</div>');
+    $('import-confirm').disabled = false;
+  }
+
+  function openImportModal() {
+    importPayload = null;
+    var body = QA.openModal('批量导入题目',
+      '<div class="field"><label>默认来源</label><select id="im-source">' + QA.sourceOptions('luogu') + '</select>' +
+      '<div class="field-help">粘贴文本 / CSV 时使用；JSON 契约中每行自带 source 时以其为准。</div></div>' +
+      '<div class="field"><label>粘贴内容（题号 / CSV / JSON）</label><textarea id="im-text" rows="9" placeholder="' + QA.esc('每行一个题号，或粘贴附录 C 契约 JSON') + '"></textarea>' +
+      '<div class="field-help">支持：题号行、带表头 CSV、附录 C 契约 JSON（schema_version 1.0）。</div></div>' +
+      '<pre style="max-height:150px;overflow:auto">' + QA.esc(IMPORT_HINT) + '</pre>' +
+      '<div class="modal-actions">' +
+        '<button class="btn" id="im-close">关闭</button>' +
+        '<button class="btn" id="im-preview">预览（dry_run）</button>' +
+        '<button class="btn btn-primary" id="import-confirm" disabled>确认导入</button>' +
+      '</div>' +
+      '<div id="import-result" style="margin-top:14px"></div>', true);
+    if (!body) return;
+    $('im-close').onclick = QA.closeModal;
+    $('im-preview').onclick = async function () {
+      var text = $('im-text').value;
+      if (!text.trim()) { QA.toast('请先粘贴导入内容', 'error'); return; }
+      importPayload = buildImportPayload(text, $('im-source').value);
+      $('import-result').innerHTML = QA.loading('正在预览…');
+      $('import-confirm').disabled = true;
+      try {
+        var res = await QA.post('/api/problems/import?dry_run=true', importPayload);
+        renderPreview(res);
+        QA.toast('预览完成，请核对后确认导入', 'info');
+      } catch (e) {
+        QA.showError($('import-result'), e);
+        QA.toast(QA.errMsg(e), 'error');
+      }
+    };
+    $('import-confirm').onclick = async function () {
+      if (!importPayload) return;
+      var b = this; b.disabled = true;
+      try {
+        var res = await QA.post('/api/problems/import', importPayload);
+        if (res.committed) {
+          QA.toast('导入完成：新增 ' + res.added + ' 条', 'success');
+          $('import-result').innerHTML = '<div class="alert alert-ok">已正式写入：新增 ' + QA.esc(res.added) +
+            ' 条，重复 ' + QA.esc((res.duplicates || []).length) + ' 条，失败 ' + QA.esc((res.failed || []).length) +
+            ' 条；创建的题面快照 ' + QA.esc(res.snapshots_created) + ' 条。</div>';
+          loadList();
+        } else { QA.toast('导入未提交', 'warn'); }
+      } catch (e) { QA.toast(QA.errMsg(e), 'error'); b.disabled = false; }
+    };
+  }
+
+  /* -------------------------- 事件委托 -------------------------- */
+  tableBox.addEventListener('click', async function (e) {
+    var btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    var act = btn.getAttribute('data-act');
+    var id = btn.getAttribute('data-id');
+    if (act === 'detail') { toggleDetail(id, btn); }
+    else if (act === 'edit') {
+      try { var p = await QA.get('/api/problems/' + id); openProblemForm(p); }
+      catch (err) { QA.toast(QA.errMsg(err), 'error'); }
+    } else if (act === 'deactivate') {
+      if (!window.confirm('确认停用题目 #' + id + '？停用后可在编辑中重新启用。')) return;
+      try { await QA.del('/api/problems/' + id); QA.toast('题目已停用', 'success'); loadList(); }
+      catch (err) { QA.toast(QA.errMsg(err), 'error'); }
+    } else if (act === 'verify') {
+      var drow = btn.closest('tr.detail-row');
+      var vpid = drow ? drow.id.replace('detail-', '') : null;
+      try {
+        await QA.post('/api/problem-knowledge/' + btn.getAttribute('data-link') + '/verify', {});
+        QA.toast('知识点已确认', 'success');
+        if (vpid) renderDetail(vpid, $('detail-content-' + vpid));
+      } catch (err) { QA.toast(QA.errMsg(err), 'error'); }
+    } else if (act === 'del-snapshot') {
+      var sid = btn.getAttribute('data-sid'), pid = btn.getAttribute('data-pid');
+      try { await QA.del('/api/problems/' + pid + '/snapshots/' + sid); QA.toast('快照已删除', 'success'); renderDetail(pid, $('detail-content-' + pid)); }
+      catch (err) { QA.toast(QA.errMsg(err), 'error'); }
+    }
+  });
+
+  tableBox.addEventListener('submit', async function (e) {
+    if (!e.target.id || e.target.id.indexOf('snap-form-') !== 0) return;
+    e.preventDefault();
+    var pid = e.target.getAttribute('data-pid');
+    var fd = new FormData(e.target);
+    try {
+      await QA.post('/api/problems/' + pid + '/snapshots', {
+        content_md: String(fd.get('content_md') || ''),
+        source_url: String(fd.get('source_url') || '')
+      });
+      QA.toast('快照已保存（仅本地）', 'success');
+      renderDetail(pid, $('detail-content-' + pid));
+    } catch (err) { QA.toast(QA.errMsg(err), 'error'); }
+  });
+
+  $('btn-create').onclick = function () { openProblemForm(null); };
+  $('btn-import').onclick = openImportModal;
+  $('btn-refresh').onclick = loadList;
+  $('btn-search').onclick = function () { state.page = 1; loadList(); };
+  $('btn-reset').onclick = function () {
+    ['f-keyword','f-source','f-dmin','f-dmax','f-node','f-learned'].forEach(function (id) { $(id).value = ''; });
+    $('f-sort').value = 'id'; $('f-size').value = '20'; $('f-inactive').checked = false;
+    state.page = 1; state.page_size = 20; loadList();
+  };
+  $('f-size').onchange = function () { state.page_size = Number(this.value); state.page = 1; loadList(); };
+
+  async function init() {
+    var srcSel = $('f-source');
+    var html = '<option value="">全部来源</option>';
+    Object.keys({ codeforces:1, luogu:1, leetcode:1, atcoder:1, lanqiao:1, other:1 }).forEach(function (k) {
+      html += '<option value="' + k + '">' + QA.esc(QA.sourceLabel(k)) + '</option>';
+    });
+    srcSel.innerHTML = html;
+    try {
+      var res = await QA.get('/api/knowledge-nodes/flat');
+      flatNodes = res.items || [];
+      var nodeSel = $('f-node');
+      nodeSel.innerHTML = '<option value="">全部知识点</option>' + flatNodes.map(function (n) {
+        return '<option value="' + n.id + '">' + QA.esc(n.name) + '（' + QA.esc(QA.categoryLabel(n.category)) + '）</option>';
+      }).join('');
+    } catch (e) { /* 知识点下拉失败不影响主流程 */ }
+    loadList();
+  }
+  init();
+})();
+</script>
+{% endblock %}

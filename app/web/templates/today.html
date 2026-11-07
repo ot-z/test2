@@ -1,0 +1,224 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="notice">
+  <strong>今日任务</strong> · 计划由本地自动生成；进度、笔记与记录均保存在本机数据库。外部原题链接将在新标签页打开。
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <div>
+      <div class="card-title">系统健康</div>
+      <div class="card-desc">数据库 / AI / 题单余量 / 最近同步</div>
+    </div>
+    <button class="btn btn-sm" id="btn-refresh-health">刷新</button>
+  </div>
+  <div id="health-box"></div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <div>
+      <div class="card-title">今日计划</div>
+      <div class="card-desc" id="today-sub">加载中…</div>
+    </div>
+    <div class="row">
+      <button class="btn btn-sm" id="btn-regenerate">重新生成 30 天计划</button>
+      <button class="btn btn-sm" id="btn-refresh-today">刷新</button>
+    </div>
+  </div>
+  <div id="ai-guide"></div>
+  <div id="today-list"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+  var $ = QA.el;
+  var healthBox = $('health-box');
+  var todayList = $('today-list');
+  var todaySub = $('today-sub');
+  var aiGuide = $('ai-guide');
+
+  function fmtSync(s) {
+    if (!s) return '暂无同步记录';
+    return QA.sourceLabel(s.source) + ' · ' + QA.statusLabel(s.status) + ' · ' + QA.fmtDate(s.finished_at);
+  }
+  async function loadHealth() {
+    healthBox.innerHTML = QA.loading('正在读取健康状态…');
+    try {
+      var h = await QA.get('/api/health');
+      var aiText = h.ai.configured ? ('已配置（' + QA.statusLabel(h.ai.status) + '）') : '未配置';
+      var aiCls = h.ai.configured ? 'badge-success' : 'badge-warn';
+      var cards = [
+        { l: '运行状态', v: QA.statusLabel(h.status), c: h.status === 'ok' ? 'badge-success' : 'badge-warn' },
+        { l: '数据库', v: h.database.ok ? '连接正常' : '异常 ' + (h.database.error || ''), c: h.database.ok ? 'badge-success' : 'badge-danger' },
+        { l: 'AI 状态', v: aiText, c: aiCls },
+        { l: '题单剩余', v: h.queue_remaining + ' 题', c: 'badge-primary' }
+      ];
+      var html = '<div class="grid grid-auto">';
+      cards.forEach(function (c) {
+        html += '<div class="stat"><div class="stat-label">' + QA.esc(c.l) + '</div>' +
+          '<div class="stat-value" style="font-size:15px;margin-top:6px">' + QA.badge(c.v, c.c) + '</div></div>';
+      });
+      html += '</div><div class="hr"></div>' +
+        '<div class="grid grid-3 small">' +
+          '<div><span class="muted">最近同步：</span>' + QA.esc(fmtSync(h.last_sync)) + '</div>' +
+          '<div><span class="muted">最近备份：</span>' + QA.esc(h.last_backup ? (h.last_backup.name + ' · ' + (h.last_backup.size || 0) + ' B') : '暂无备份') + '</div>' +
+          '<div><span class="muted">数据总量：</span>题目 ' + QA.esc(h.problems) + ' · 笔记 ' + QA.esc(h.notes) + ' · 记录 ' + QA.esc(h.records) + '</div>' +
+          '<div><span class="muted">计划天数：</span>' + QA.esc(h.plans) + ' 天 / ' + QA.esc(h.plan_items) + ' 项任务</div>' +
+          '<div><span class="muted">应用版本：</span>' + QA.esc(h.version) + '</div>' +
+        '</div>';
+      healthBox.innerHTML = html;
+
+      if (!h.ai.configured) {
+        aiGuide.innerHTML = '<div class="alert alert-info">AI 尚未配置，题目分析与代码诊断不可用；核心刷题功能不受影响。' +
+          '请前往 <a href="/settings">设置 → AI 参数</a> 填写 API Key。</div>';
+      } else {
+        aiGuide.innerHTML = '';
+      }
+    } catch (e) {
+      QA.showError(healthBox, e);
+    }
+  }
+
+  function statusButtons(item) {
+    var opts = [
+      ['learning', '学习中'], ['learned', '已学题解'], ['ac', '独立通过'],
+      ['reviewed', '已完成复习'], ['skipped', '跳过']
+    ];
+    return opts.map(function (o) {
+      return '<button class="btn btn-xs' + (item.status === o[0] ? ' active' : '') + '" ' +
+        'data-act="status" data-id="' + item.id + '" data-status="' + o[0] + '">' + o[1] + '</button>';
+    }).join('');
+  }
+
+  function taskCard(item) {
+    var p = item.problem || {};
+    var title = QA.esc(p.title || ('题目 #' + item.problem_id));
+    var link = p.url ? QA.externalLink(p.url, '原题链接 ↗', 'small') : '<span class="small muted">无外链</span>';
+    var src = QA.esc(QA.sourceLabel(p.source)) + ' · ' + QA.esc(p.source_key || '—');
+    var diff = QA.difficultyBadge(p.difficulty_level);
+    var reviewNote = (item.item_type === 'review' && item.source_due_date)
+      ? '<span class="small muted">（原题日期 ' + QA.esc(item.source_due_date) + '）</span>' : '';
+    var html =
+      '<div class="task" data-task="' + item.id + '">' +
+        '<div class="task-badges">' +
+          '<span class="badge ' + (item.item_type === 'new' ? 'badge-primary' : 'badge-info') + '">' + QA.esc(item.item_type_label) + '</span>' +
+          QA.statusBadge(item.status) + diff +
+        '</div>' +
+        '<div class="task-head">' +
+          '<div>' +
+            '<div class="task-title">' + title + '</div>' +
+            '<div class="task-meta">' + src + ' · ' + link + ' ' + reviewNote + '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="task-foot">' +
+          '<div class="status-buttons">' + statusButtons(item) + '</div>' +
+          '<span class="spacer"></span>' +
+          '<a class="btn btn-sm" href="/notes?problem_id=' + QA.esc(item.problem_id) + '">写笔记' + (item.notes_count ? ' (' + item.notes_count + ')' : '') + '</a>' +
+          '<button class="btn btn-sm" data-act="record" data-id="' + item.id + '">记录</button>' +
+        '</div>' +
+        '<form class="record-form" data-id="' + item.id + '" hidden>' +
+          '<input type="hidden" name="problem_id" value="' + QA.esc(item.problem_id) + '">' +
+          '<input type="hidden" name="plan_item_id" value="' + item.id + '">' +
+          '<div class="form-row-3">' +
+            '<div class="field"><label>耗时（分钟）</label><input type="number" name="time_spent_min" min="0" value="0"></div>' +
+            '<div class="field"><label>语言</label><input type="text" name="language" value="C++"></div>' +
+            '<div class="field"><label>掌握度 1–5</label><select name="mastery">' +
+              [1,2,3,4,5].map(function(n){ return '<option value="'+n+'"'+(n===3?' selected':'')+'>'+n+'</option>'; }).join('') +
+            '</select></div>' +
+          '</div>' +
+          '<div class="field"><label>代码片段</label><textarea name="code_snippet" rows="3" placeholder="可选，粘贴关键代码"></textarea></div>' +
+          '<div class="field"><label>备注</label><input type="text" name="memo" placeholder="可选，如易错点 / 心得"></div>' +
+          '<button type="submit" class="btn btn-primary btn-sm">保存记录</button>' +
+        '</form>' +
+      '</div>';
+    return html;
+  }
+
+  async function loadToday() {
+    todayList.innerHTML = QA.loading('正在加载今日任务…');
+    try {
+      var d = await QA.get('/api/plan/today');
+      todaySub.textContent = '日期 ' + d.date + ' · 共 ' + d.items.length + ' 项任务 · 题单剩余 ' + d.queue_remaining + ' 题';
+      if (!d.items || !d.items.length) {
+        todayList.innerHTML = QA.empty('今日无任务', '可能是休息日 / 暂停区间，或题单队列已耗尽。可在「设置」调整计划参数，或重新生成计划。');
+        return;
+      }
+      todayList.innerHTML = d.items.map(taskCard).join('');
+    } catch (e) {
+      QA.showError(todayList, e);
+      todaySub.textContent = '加载失败';
+    }
+  }
+
+  async function patchStatus(id, status) {
+    try {
+      await QA.patch('/api/plan/items/' + id, { status: status });
+      QA.toast('状态已更新为「' + QA.statusLabel(status) + '」', 'success');
+      await loadToday();
+    } catch (e) {
+      QA.toast(QA.errMsg(e), 'error');
+    }
+  }
+
+  async function saveRecord(form) {
+    var fd = new FormData(form);
+    var body = {
+      problem_id: Number(fd.get('problem_id')),
+      plan_item_id: Number(fd.get('plan_item_id')),
+      result: 'done',
+      time_spent_min: Number(fd.get('time_spent_min') || 0),
+      language: String(fd.get('language') || 'C++'),
+      mastery: Number(fd.get('mastery') || 3),
+      code_snippet: String(fd.get('code_snippet') || ''),
+      memo: String(fd.get('memo') || '')
+    };
+    try {
+      await QA.post('/api/records', body);
+      QA.toast('学习记录已保存', 'success');
+      form.hidden = true;
+    } catch (e) {
+      QA.toast(QA.errMsg(e), 'error');
+    }
+  }
+
+  todayList.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    var act = btn.getAttribute('data-act');
+    if (act === 'status') { patchStatus(btn.getAttribute('data-id'), btn.getAttribute('data-status')); }
+    else if (act === 'record') {
+      var form = todayList.querySelector('form.record-form[data-id="' + btn.getAttribute('data-id') + '"]');
+      if (form) form.hidden = !form.hidden;
+    }
+  });
+  todayList.addEventListener('submit', function (e) {
+    if (e.target.classList && e.target.classList.contains('record-form')) {
+      e.preventDefault();
+      saveRecord(e.target);
+    }
+  });
+
+  $('btn-refresh-health').addEventListener('click', loadHealth);
+  $('btn-refresh-today').addEventListener('click', loadToday);
+  $('btn-regenerate').addEventListener('click', async function () {
+    var b = this; b.disabled = true;
+    QA.toast('正在重新生成 30 天计划…', 'info');
+    try {
+      var r = await QA.post('/api/plan/generate?days=30', {});
+      QA.toast('已生成 ' + r.generated_plans + ' 天 / ' + r.generated_items + ' 项任务', 'success');
+      await loadToday();
+      await loadHealth();
+    } catch (e) { QA.toast(QA.errMsg(e), 'error'); }
+    finally { b.disabled = false; }
+  });
+
+  loadHealth();
+  loadToday();
+})();
+</script>
+{% endblock %}

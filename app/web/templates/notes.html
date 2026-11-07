@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="notice"><strong>思路笔记</strong> · Markdown 编辑 + 实时预览；输入停顿后自动保存到本机（带 <span class="mono">is_auto_saved=true</span> 标记）。代码块使用等宽字体。</div>
+
+<div class="card">
+  <div class="inline-form">
+    <div class="field"><label>按题目筛选</label><select id="n-problem"><option value="">全部题目</option></select></div>
+    <div class="field"><label>关键字</label><input type="text" id="n-keyword" placeholder="标题 / 正文关键字"></div>
+    <button class="btn btn-primary btn-sm" id="btn-query">查询</button>
+    <button class="btn btn-sm" id="btn-new-note">+ 新建笔记</button>
+    <button class="btn btn-sm" id="btn-refresh">刷新</button>
+  </div>
+</div>
+
+<div class="notes-layout">
+  <div class="card">
+    <div class="card-head"><div><div class="card-title">笔记列表</div><div class="card-desc" id="list-sub">加载中…</div></div></div>
+    <div id="note-list"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div><div class="card-title">编辑器</div><div class="card-desc" id="editor-sub">请选择或新建一篇笔记</div></div>
+      <div class="row">
+        <span class="save-state" id="save-state"></span>
+        <button class="btn btn-sm btn-primary" id="btn-save">保存</button>
+        <button class="btn btn-sm" id="btn-delete" disabled>删除</button>
+      </div>
+    </div>
+    <div id="editor-empty"></div>
+    <div id="editor-area" hidden>
+      <div class="field"><label>标题</label><input type="text" id="e-title"></div>
+      <div class="editor-split">
+        <div>
+          <div class="field-label">Markdown 正文</div>
+          <textarea id="e-content" placeholder="## 思路&#10;1. …&#10;&#10;```cpp&#10;// 代码&#10;```"></textarea>
+        </div>
+        <div>
+          <div class="field-label">预览</div>
+          <div class="preview-box md" id="e-preview"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+  var $ = QA.el;
+  var noteList = $('note-list');
+  var editorArea = $('editor-area');
+  var editorEmpty = $('editor-empty');
+  var saveState = $('save-state');
+  var current = null;
+  var problems = [];
+  var notesCache = [];
+  var saveTimer = null;
+  var presetProblem = new URLSearchParams(location.search).get('problem_id') || '';
+
+  function setState(text, cls) {
+    saveState.textContent = text || '';
+    saveState.className = 'save-state' + (cls ? ' ' + cls : '');
+  }
+
+  async function loadProblems() {
+    try {
+      var res = await QA.get('/api/problems?page_size=200');
+      problems = res.items || [];
+      var html = '<option value="">全部题目</option>';
+      problems.forEach(function (p) {
+        html += '<option value="' + p.id + '"' + (String(presetProblem) === String(p.id) ? ' selected' : '') + '>' +
+          QA.esc(p.title) + ' · ' + QA.esc(QA.sourceLabel(p.source)) + '</option>';
+      });
+      $('n-problem').innerHTML = html;
+    } catch (e) { QA.toast(QA.errMsg(e), 'error'); }
+  }
+
+  async function loadNotes() {
+    noteList.innerHTML = QA.loading('正在加载笔记…');
+    var params = { problem_id: $('n-problem').value, keyword: $('n-keyword').value.trim() };
+    try {
+      var res = await QA.get('/api/notes' + QA.query(params));
+      var items = res.items || [];
+      notesCache = items;
+      $('list-sub').textContent = '共 ' + items.length + ' 篇';
+      if (!items.length) { noteList.innerHTML = QA.empty('暂无笔记', '点击「新建笔记」，或从今日任务页点「写笔记」跳转过来。'); return; }
+      noteList.innerHTML = items.map(function (n) {
+        return '<div class="list-item" data-act="select" data-id="' + n.id + '" style="cursor:pointer">' +
+          '<div class="row-between"><strong>' + QA.esc(n.title) + '</strong>' +
+          (n.is_auto_saved ? QA.badge('自动保存', 'badge-info') : '') + '</div>' +
+          '<div class="small muted" style="margin-top:3px">' + QA.esc(n.problem_title || ('题目 #' + n.problem_id)) + '</div>' +
+          '<div class="small muted" style="margin-top:2px">更新 ' + QA.esc(QA.fmtDate(n.updated_at)) + '</div>' +
+        '</div>';
+      }).join('');
+    } catch (e) { QA.showError(noteList, e); }
+  }
+
+  function openEditor(n) {
+    current = { id: n.id, problem_id: n.problem_id, title: n.title || '', content_md: n.content_md || '' };
+    editorEmpty.hidden = true;
+    editorArea.hidden = false;
+    $('e-title').value = current.title;
+    $('e-content').value = current.content_md;
+    $('e-preview').innerHTML = QA.mdToHtml(current.content_md);
+    $('editor-sub').textContent = '#' + n.id + ' · ' + (n.problem_title || ('题目 #' + n.problem_id));
+    $('btn-delete').disabled = false;
+    setState('', '');
+    Array.prototype.forEach.call(noteList.querySelectorAll('[data-act="select"]'), function (el) {
+      el.style.borderColor = (String(el.getAttribute('data-id')) === String(n.id)) ? 'var(--primary)' : '';
+    });
+  }
+
+  function selectNote(id) {
+    var found = notesCache.filter(function (x) { return String(x.id) === String(id); })[0];
+    if (found) openEditor(found);
+    else QA.toast('未找到该笔记，请刷新列表', 'error');
+  }
+
+  async function saveNote(isAuto) {
+    if (!current) return;
+    var payload = {
+      title: $('e-title').value,
+      content_md: $('e-content').value,
+      is_auto_saved: !!isAuto
+    };
+    setState(isAuto ? '自动保存中…' : '保存中…', 'saving');
+    try {
+      var res = await QA.patch('/api/notes/' + current.id, payload);
+      current.title = res.title; current.content_md = res.content_md;
+      setState(isAuto ? '已自动保存 ' + QA.fmtDate(res.updated_at) : '已保存', 'saved');
+      /* 同步列表中的标题 */
+      var item = noteList.querySelector('[data-act="select"][data-id="' + current.id + '"] strong');
+      if (item) item.textContent = res.title;
+    } catch (e) { setState('保存失败：' + QA.errMsg(e), 'error'); }
+  }
+
+  function scheduleAutoSave() {
+    if (saveTimer) clearTimeout(saveTimer);
+    setState('有未保存的修改…', 'saving');
+    saveTimer = setTimeout(function () { saveNote(true); }, 800);
+  }
+
+  function openNewNote() {
+    if (!problems.length) { QA.toast('题库为空，请先在题库目录添加题目', 'error'); return; }
+    var body = QA.openModal('新建思路笔记',
+      '<form id="new-note-form">' +
+        '<div class="field"><label>关联题目 *</label><select name="problem_id">' +
+          problems.map(function (p) {
+            return '<option value="' + p.id + '"' + (String(presetProblem) === String(p.id) ? ' selected' : '') + '>' + QA.esc(p.title) + '</option>';
+          }).join('') + '</select></div>' +
+        '<div class="field"><label>标题</label><input type="text" name="title" value="思路总结"></div>' +
+        '<div class="modal-actions"><button type="button" class="btn" id="nn-cancel">取消</button>' +
+        '<button type="submit" class="btn btn-primary">创建笔记</button></div>' +
+      '</form>');
+    if (!body) return;
+    body.querySelector('#nn-cancel').onclick = QA.closeModal;
+    body.querySelector('#new-note-form').onsubmit = async function (e) {
+      e.preventDefault();
+      var fd = new FormData(e.target);
+      try {
+        var created = await QA.post('/api/notes', {
+          problem_id: Number(fd.get('problem_id')),
+          title: String(fd.get('title') || '思路总结'),
+          content_md: '',
+          is_auto_saved: false
+        });
+        QA.toast('笔记已创建', 'success');
+        QA.closeModal();
+        $('n-problem').value = String(created.problem_id);
+        await loadNotes();
+        openEditor(created);
+      } catch (err) { QA.toast(QA.errMsg(err), 'error'); }
+    };
+  }
+
+  noteList.addEventListener('click', function (e) {
+    var el = e.target.closest('[data-act="select"]');
+    if (el) selectNote(el.getAttribute('data-id'));
+  });
+  $('e-title').addEventListener('input', function () { current.title = this.value; scheduleAutoSave(); });
+  $('e-content').addEventListener('input', function () {
+    current.content_md = this.value;
+    $('e-preview').innerHTML = QA.mdToHtml(this.value);
+    scheduleAutoSave();
+  });
+  $('btn-save').onclick = function () { if (saveTimer) clearTimeout(saveTimer); saveNote(false); };
+  $('btn-delete').onclick = function () {
+    if (!current) return;
+    if (!window.confirm('确认删除笔记 #' + current.id + '？此操作不可撤销。')) return;
+    QA.del('/api/notes/' + current.id).then(function () {
+      QA.toast('笔记已删除', 'success');
+      current = null;
+      editorArea.hidden = true;
+      editorEmpty.hidden = false;
+      editorEmpty.innerHTML = QA.empty('笔记已删除', '请选择或新建一篇笔记。');
+      $('btn-delete').disabled = true;
+      setState('', '');
+      loadNotes();
+    }).catch(function (e) { QA.toast(QA.errMsg(e), 'error'); });
+  };
+  $('btn-query').onclick = loadNotes;
+  $('btn-new-note').onclick = openNewNote;
+  $('btn-refresh').onclick = loadNotes;
+
+  (async function init() {
+    editorEmpty.innerHTML = QA.empty('请选择或新建一篇笔记', '从左侧列表点选，或点击「新建笔记」。');
+    await loadProblems();
+    await loadNotes();
+    if (presetProblem) {
+      var f = notesCache.filter(function (x) { return String(x.problem_id) === String(presetProblem); })[0];
+      if (f) openEditor(f);
+    }
+  })();
+})();
+</script>
+{% endblock %}

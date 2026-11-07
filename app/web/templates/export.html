@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="alert alert-warn" style="margin-bottom:16px">
+  <strong>合规边界：</strong>单题题面快照（FR-28）<strong>不参与任何导出</strong>，也不进入 JSON 数据快照。
+  复盘文档仅包含本地题目元信息、个人笔记与 AI 分析摘要，不含第三方题面原文。
+</div>
+
+<div class="card">
+  <div class="card-head"><div><div class="card-title">导出复盘文档</div><div class="card-desc">按日期范围生成 Markdown / DOCX / PDF</div></div></div>
+  <form class="inline-form" id="export-form">
+    <div class="field"><label>起始日期 *</label><input type="date" name="date_from" required></div>
+    <div class="field"><label>结束日期 *</label><input type="date" name="date_to" required></div>
+    <div class="field"><label>格式</label><select name="format"><option value="md">Markdown (.md)</option><option value="docx">Word (.docx)</option><option value="pdf">PDF (.pdf)</option></select></div>
+    <div class="field"><label class="check"><input type="checkbox" name="include_ai" checked> 包含 AI 分析</label></div>
+    <div class="field"><label class="check"><input type="checkbox" name="include_code" checked> 包含代码片段</label></div>
+    <button type="submit" class="btn btn-primary btn-sm">生成导出</button>
+  </form>
+  <div class="hint">DOCX / PDF 需要后端已安装 python-docx / reportlab；缺失时会给出可读错误提示。</div>
+  <div id="export-result" style="margin-top:14px"></div>
+</div>
+
+<div class="card">
+  <div class="card-head"><div><div class="card-title">历史导出记录</div><div class="card-desc" id="exports-sub">加载中…</div></div>
+    <button class="btn btn-sm" id="btn-refresh-exports">刷新</button></div>
+  <div id="exports-box"></div>
+</div>
+
+<div class="card">
+  <div class="card-head"><div><div class="card-title">JSON 数据快照</div><div class="card-desc">完整业务数据备份 / 恢复（不含单题题面快照）</div></div></div>
+  <div class="row" style="margin-bottom:14px">
+    <button class="btn btn-primary btn-sm" id="btn-snapshot">导出 JSON 快照</button>
+    <button class="btn btn-sm" id="btn-run-backup">立即备份（SQLite）</button>
+  </div>
+  <div class="row" style="margin-bottom:14px">
+    <input type="file" id="restore-file" accept=".json,application/json">
+    <button class="btn btn-sm btn-danger" id="btn-restore">从文件导入快照</button>
+    <span class="hint">导入会<strong>清空现有业务数据</strong>后重建，需二次确认。</span>
+  </div>
+  <div class="section-title">备份文件列表</div>
+  <div id="backup-box"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+  var $ = QA.el;
+
+  function iso(d) { return d.toISOString().slice(0, 10); }
+  function defaultRange() {
+    var to = new Date(); var from = new Date(); from.setDate(from.getDate() - 29);
+    $('export-form').elements.date_from.value = iso(from);
+    $('export-form').elements.date_to.value = iso(to);
+  }
+
+  $('export-form').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    var fd = new FormData(e.target);
+    var payload = {
+      date_from: String(fd.get('date_from') || ''),
+      date_to: String(fd.get('date_to') || ''),
+      format: String(fd.get('format') || 'md'),
+      include_ai: fd.get('include_ai') === 'on',
+      include_code: fd.get('include_code') === 'on'
+    };
+    if (!payload.date_from || !payload.date_to) { QA.toast('请选择日期范围', 'error'); return; }
+    var box = $('export-result');
+    box.innerHTML = QA.loading('正在生成复盘文档…');
+    try {
+      var r = await QA.post('/api/exports', payload);
+      box.innerHTML =
+        '<div class="alert alert-ok">导出成功 · ' + QA.esc(r.filename) + ' · 共 ' + QA.esc(r.item_count) + ' 项任务</div>' +
+        '<div class="row" style="margin:10px 0"><a class="btn btn-primary btn-sm" href="' + QA.esc(r.download_url) + '" download>下载 ' + QA.esc(r.format.toUpperCase()) + ' 文件</a></div>' +
+        '<div class="section-title">结果预览（Markdown 前 600 字）</div>' +
+        '<pre>' + QA.esc(r.markdown_preview || '') + '</pre>';
+      QA.toast('复盘文档已生成', 'success');
+      loadExports();
+    } catch (err) {
+      box.innerHTML = '<div class="alert alert-error">导出失败：' + QA.esc(QA.errMsg(err)) + '</div>';
+      QA.toast(QA.errMsg(err), 'error');
+    }
+  });
+
+  async function loadExports() {
+    var box = $('exports-box');
+    box.innerHTML = QA.loading('正在加载导出记录…');
+    try {
+      var res = await QA.get('/api/exports');
+      var items = res.items || [];
+      $('exports-sub').textContent = '共 ' + items.length + ' 条记录';
+      if (!items.length) { box.innerHTML = QA.empty('暂无导出记录', '在上方选择日期范围并生成第一份复盘文档。'); return; }
+      box.innerHTML = '<div class="table-wrap"><table><thead><tr>' +
+        '<th>ID</th><th>日期范围</th><th>格式</th><th>任务数</th><th>AI</th><th>代码</th><th>生成时间</th><th>操作</th>' +
+        '</tr></thead><tbody>' + items.map(function (r) {
+          return '<tr><td class="mono muted">#' + r.id + '</td>' +
+            '<td class="small">' + QA.esc(r.date_from || '—') + ' ~ ' + QA.esc(r.date_to || '—') + '</td>' +
+            '<td>' + QA.badge(String(r.format || '').toUpperCase(), 'badge-primary') + '</td>' +
+            '<td>' + QA.esc(r.item_count) + '</td>' +
+            '<td>' + (r.include_ai ? '是' : '否') + '</td><td>' + (r.include_code ? '是' : '否') + '</td>' +
+            '<td class="small muted">' + QA.esc(QA.fmtDate(r.created_at)) + '</td>' +
+            '<td><a class="btn btn-xs" href="/api/exports/' + r.id + '/download" download>下载</a></td></tr>';
+        }).join('') + '</tbody></table></div>';
+    } catch (e) { QA.showError(box, e); }
+  }
+
+  async function snapshotDownload() {
+    QA.toast('正在导出 JSON 快照…', 'info');
+    try {
+      var data = await QA.get('/api/backup/snapshot');
+      var name = 'quiz_snapshot_' + iso(new Date()).replace(/-/g, '') + '.json';
+      QA.downloadBlob(JSON.stringify(data, null, 2), name);
+      QA.toast('快照已下载（不含单题题面快照）', 'success');
+    } catch (e) { QA.toast(QA.errMsg(e), 'error'); }
+  }
+
+  function restoreFromFile() {
+    var input = $('restore-file');
+    if (!input.files || !input.files[0]) { QA.toast('请先选择 JSON 快照文件', 'error'); return; }
+    var file = input.files[0];
+    var reader = new FileReader();
+    reader.onload = function () {
+      var parsed;
+      try { parsed = JSON.parse(reader.result); }
+      catch (err) { QA.toast('文件不是合法 JSON：' + QA.errMsg(err), 'error'); return; }
+      QA.confirmDanger('从文件导入 JSON 快照',
+        '此操作会清空现有全部业务数据（题目、计划、记录、笔记、设置等）并用快照内容重建，且不可撤销。' +
+        '单题题面快照不在快照内，也不会被恢复。请确认已备份当前数据。',
+        async function () {
+          var res = await QA.post('/api/backup/restore', { snapshot: parsed, clear: true });
+          QA.toast('快照导入完成，共恢复 ' + res.total + ' 条记录', 'success');
+          loadExports();
+          loadBackups();
+        });
+    };
+    reader.onerror = function () { QA.toast('读取文件失败', 'error'); };
+    reader.readAsText(file, 'utf-8');
+  }
+
+  async function runBackup() {
+    try {
+      var r = await QA.post('/api/backup/run', {});
+      QA.toast(r.skipped ? ('备份跳过：' + r.reason) : ('备份完成：' + r.path), r.skipped ? 'info' : 'success');
+      loadBackups();
+    } catch (e) { QA.toast(QA.errMsg(e), 'error'); }
+  }
+
+  async function loadBackups() {
+    var box = $('backup-box');
+    box.innerHTML = QA.loading('正在加载备份列表…');
+    try {
+      var res = await QA.get('/api/backup/files');
+      var items = res.items || [];
+      if (!items.length) { box.innerHTML = QA.empty('暂无备份文件', '点击「立即备份」生成一份 SQLite 一致性副本。'); return; }
+      box.innerHTML = '<div class="table-wrap"><table><thead><tr><th>文件名</th><th>大小</th><th>路径</th></tr></thead><tbody>' +
+        items.map(function (f) {
+          return '<tr><td class="mono">' + QA.esc(f.name) + '</td><td>' + QA.esc(f.size) + ' B</td>' +
+            '<td class="small muted mono">' + QA.esc(f.path) + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    } catch (e) { QA.showError(box, e); }
+  }
+
+  $('btn-refresh-exports').onclick = loadExports;
+  $('btn-snapshot').onclick = snapshotDownload;
+  $('btn-restore').onclick = restoreFromFile;
+  $('btn-run-backup').onclick = runBackup;
+
+  defaultRange();
+  loadExports();
+  loadBackups();
+})();
+</script>
+{% endblock %}

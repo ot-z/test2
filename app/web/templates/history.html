@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="notice"><strong>历史与统计</strong> · 所有数据来自本机数据库，离线可用。日历视图按天列出任务与状态。</div>
+
+<div class="card">
+  <div class="card-head"><div><div class="card-title">统计概览</div><div class="card-desc" id="stats-sub">加载中…</div></div>
+    <button class="btn btn-sm" id="btn-refresh-stats">刷新</button></div>
+  <div id="stats-box"></div>
+</div>
+
+<div class="card">
+  <div class="card-head"><div><div class="card-title">历史记录</div><div class="card-desc">按天 / 按题目 / 按知识点 三视图</div></div></div>
+  <div class="inline-form" style="margin-bottom:14px">
+    <div class="field"><label>起始日期</label><input type="date" id="h-from"></div>
+    <div class="field"><label>结束日期</label><input type="date" id="h-to"></div>
+    <button class="btn btn-primary btn-sm" id="btn-query">查询</button>
+    <button class="btn btn-sm" id="btn-last30">近 30 天</button>
+  </div>
+  <div class="tabs" id="view-tabs">
+    <button class="tab active" data-view="day">按天（日历）</button>
+    <button class="tab" data-view="problem">按题目</button>
+    <button class="tab" data-view="knowledge">按知识点</button>
+  </div>
+  <div id="history-box"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+  var $ = QA.el;
+  var statsBox = $('stats-box');
+  var historyBox = $('history-box');
+  var view = 'day';
+  var problemMap = {};
+
+  function iso(d) { return d.toISOString().slice(0, 10); }
+  function defaultRange() {
+    var to = new Date();
+    var from = new Date(); from.setDate(from.getDate() - 29);
+    $('h-to').value = iso(to); $('h-from').value = iso(from);
+  }
+
+  function barRow(label, value, max, suffix) {
+    var pct = max ? Math.round(value / max * 100) : 0;
+    return '<div class="bar-row"><div class="bar-label" title="' + QA.esc(label) + '">' + QA.esc(label) + '</div>' +
+      '<div class="bar-track"><div class="bar-fill" style="width:' + pct + '%"></div></div>' +
+      '<div class="bar-num">' + QA.esc(value) + (suffix || '') + '</div></div>';
+  }
+
+  async function loadStats() {
+    statsBox.innerHTML = QA.loading('正在统计…');
+    try {
+      var s = await QA.get('/api/stats/overview');
+      $('stats-sub').textContent = '完成率 ' + Math.round((s.completion_rate || 0) * 100) + '% · 连续打卡 ' + s.streak_days + ' 天';
+      var cards = [
+        ['题目总数', s.problems, '道'], ['启用题目', s.active_problems, '道'], ['已学题目', s.learned_problems, '道'],
+        ['复习完成', s.reviewed_items, '项'], ['总任务', s.total_items, '项'], ['已完成', s.done_items, '项'],
+        ['完成率', Math.round((s.completion_rate || 0) * 100) + '%', ''], ['笔记', s.notes, '篇'],
+        ['学习记录', s.records, '条'], ['平均掌握度', s.avg_mastery, '/5'], ['累计时长', s.total_minutes, '分钟'],
+        ['连续打卡', s.streak_days, '天']
+      ];
+      var html = '<div class="grid grid-auto">';
+      cards.forEach(function (c) {
+        html += '<div class="stat"><div class="stat-label">' + QA.esc(c[0]) + '</div>' +
+          '<div class="stat-value">' + QA.esc(c[1]) + '<small>' + QA.esc(c[2]) + '</small></div></div>';
+      });
+      html += '</div><div class="hr"></div><div class="grid grid-2">';
+
+      var dist = s.difficulty_distribution || {};
+      var dvals = [1,2,3,4,5].map(function (n) { return Number(dist[n] || dist[String(n)] || 0); });
+      var dmax = Math.max.apply(null, dvals.concat([1]));
+      html += '<div><div class="section-title">难度分布（启用题目）</div>';
+      [1,2,3,4,5].forEach(function (n, i) {
+        html += barRow(n + ' · ' + QA.difficultyLabel(n), dvals[i], dmax, ' 题');
+      });
+      html += '</div>';
+
+      var cov = s.knowledge_coverage || [];
+      var cmax = Math.max.apply(null, cov.map(function (x) { return x.count; }).concat([1]));
+      html += '<div><div class="section-title">知识点覆盖（已确认关联，Top 20）</div>';
+      if (cov.length) cov.forEach(function (c) { html += barRow(c.node, c.count, cmax, ' 题'); });
+      else html += '<div class="hint">暂无已确认的知识点关联数据。</div>';
+      html += '</div></div>';
+      statsBox.innerHTML = html;
+    } catch (e) { QA.showError(statsBox, e); }
+  }
+
+  function dayView(items) {
+    if (!items.length) return QA.empty('所选日期范围内没有计划记录', '可调整日期范围，或先在今日任务页生成计划。');
+    return items.map(function (d) {
+      var rows = (d.items || []).map(function (it) {
+        var p = problemMap[it.problem_id];
+        return '<div class="row-between" style="padding:5px 0;border-top:1px dashed var(--border)">' +
+          '<div class="small"><span class="badge ' + (it.item_type === 'new' ? 'badge-primary' : 'badge-info') + '">' +
+          (it.item_type === 'new' ? '新题·学题解' : '复习·独立重做') + '</span> ' +
+          QA.esc(p ? p.title : ('题目 #' + it.problem_id)) +
+          (p && p.url ? ' ' + QA.externalLink(p.url, '↗', 'small') : '') + '</div>' +
+          QA.statusBadge(it.status) + '</div>';
+      }).join('');
+      return '<div class="list-item"><div class="row-between"><strong>' + QA.esc(d.date) + '</strong>' +
+        (d.note ? '<span class="badge badge-warn">' + QA.esc(d.note) + '</span>' : '') + '</div>' +
+        (rows || '<div class="hint" style="margin-top:6px">当日无任务（休息日 / 题单不足）</div>') + '</div>';
+    }).join('');
+  }
+
+  function problemView(items) {
+    if (!items.length) return QA.empty('暂无题目维度数据');
+    return '<div class="table-wrap"><table><thead><tr><th>题目</th><th>来源</th><th>出现次数</th><th>状态记录</th><th>日期</th></tr></thead><tbody>' +
+      items.map(function (r) {
+        return '<tr><td><div class="cell-title">' + QA.esc(r.title) + '</div>' +
+          (r.url ? QA.externalLink(r.url, '原题 ↗', 'small') : '') + '</td>' +
+          '<td>' + QA.esc(QA.sourceLabel(r.source)) + '</td>' +
+          '<td>' + QA.esc(r.count) + '</td>' +
+          '<td>' + (r.statuses || []).map(function (s) { return QA.statusBadge(s); }).join(' ') + '</td>' +
+          '<td class="small muted">' + (r.dates || []).map(function (d) { return QA.esc(d); }).join('<br>') + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+
+  function knowledgeView(items) {
+    if (!items.length) return QA.empty('暂无知识点维度数据', '需要题目已关联并确认知识点。');
+    var max = Math.max.apply(null, items.map(function (x) { return x.count; }).concat([1]));
+    return items.map(function (r) { return barRow(r.node, r.count, max, ' 次'); }).join('');
+  }
+
+  async function loadHistory() {
+    historyBox.innerHTML = QA.loading('正在加载历史…');
+    var params = { date_from: $('h-from').value, date_to: $('h-to').value, view: view };
+    try {
+      var res = await QA.get('/api/history' + QA.query(params));
+      var items = res.items || [];
+      $('history-box').dataset.range = res.date_from + ' ~ ' + res.date_to;
+      if (view === 'day') historyBox.innerHTML = dayView(items);
+      else if (view === 'problem') historyBox.innerHTML = problemView(items);
+      else historyBox.innerHTML = knowledgeView(items);
+    } catch (e) { QA.showError(historyBox, e); }
+  }
+
+  $('view-tabs').addEventListener('click', function (e) {
+    var t = e.target.closest('.tab');
+    if (!t) return;
+    view = t.getAttribute('data-view');
+    Array.prototype.forEach.call(this.querySelectorAll('.tab'), function (x) { x.classList.remove('active'); });
+    t.classList.add('active');
+    loadHistory();
+  });
+  $('btn-query').onclick = loadHistory;
+  $('btn-last30').onclick = function () { defaultRange(); loadHistory(); };
+  $('btn-refresh-stats').onclick = loadStats;
+
+  (async function init() {
+    defaultRange();
+    try {
+      var res = await QA.get('/api/problems?page_size=200');
+      (res.items || []).forEach(function (p) { problemMap[p.id] = p; });
+    } catch (e) { /* 题目映射失败不影响历史展示 */ }
+    loadStats();
+    loadHistory();
+  })();
+})();
+</script>
+{% endblock %}
