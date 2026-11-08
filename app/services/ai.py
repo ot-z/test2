@@ -20,6 +20,7 @@ from ..db import SessionLocal, _utcnow
 from ..errors import ServiceUnavailable, ValidationError
 from ..models import AiCall, AiMessage, KnowledgeNode, Problem, ProblemKnowledge
 from ..utils import model_dict
+from . import ability
 from .settings import ai_config, model_capabilities, read_api_key
 
 PRICE_PER_MILLION = {
@@ -164,6 +165,8 @@ async def stream_events(scene: str, payload: dict) -> AsyncGenerator[str, None]:
             yield _sse({"type": "error", "code": "NOT_CONFIGURED",
                         "message": "尚未配置 DeepSeek API Key，请在「设置 → AI」填写。核心刷题功能不受影响。"})
             return
+        # FR-32：把个人能力画像写进 system prompt，讲解深度与新知识标记由它约束
+        ability_hint = ability.prompt_suffix(db, problem_id)
     finally:
         db.close()
 
@@ -176,7 +179,7 @@ async def stream_events(scene: str, payload: dict) -> AsyncGenerator[str, None]:
         user_text = f"【错误现象】{phenomenon}\n\n【代码】\n{user_text}"
 
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPTS[scene]},
+        {"role": "system", "content": SYSTEM_PROMPTS[scene] + ability_hint},
         {"role": "user", "content": user_text},
     ]
     call_id = _log_start(scene, model, problem_id, user_text)

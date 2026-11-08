@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="notice wb-standalone-tip">
+  <strong>独立窗口模式</strong> · 这是同一套题目工作台的全屏形态，数据仍保存在本机。
+  <div class="row" style="margin-top:8px">
+    <button class="btn btn-sm" onclick="window.close()">关闭本窗口</button>
+    <a class="btn btn-sm" href="/problems">返回题库目录</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+  QA.openWorkbench({{ problem_id | tojson }}, { standalone: true });
+})();
+</script>
+{% endblock %}

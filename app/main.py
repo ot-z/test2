@@ -117,6 +117,7 @@ PAGES = {
     "problems": "题库目录",
     "collect": "题号采集",
     "knowledge": "知识点与标签",
+    "ability": "能力画像",
     "syllabus": "大纲与题单",
     "history": "历史与统计",
     "notes": "思路笔记",
@@ -132,7 +133,7 @@ def _render(request: Request, page: str, **context):
         name=f"{page}.html",
         context={
             "page": page,
-            "page_title": PAGES[page],
+            "page_title": PAGES.get(page, "刷题助手"),
             "pages": PAGES,
             "version": __version__,
             "sources": link_rules.known_sources(),
@@ -159,6 +160,11 @@ def page_collect(request: Request):
 @app.get("/knowledge", include_in_schema=False)
 def page_knowledge(request: Request):
     return _render(request, "knowledge")
+
+
+@app.get("/ability", include_in_schema=False)
+def page_ability(request: Request):
+    return _render(request, "ability")
 
 
 @app.get("/syllabus", include_in_schema=False)
@@ -189,3 +195,9 @@ def page_export(request: Request):
 @app.get("/settings", include_in_schema=False)
 def page_settings(request: Request):
     return _render(request, "settings")
+
+
+@app.get("/workbench/{problem_id}", include_in_schema=False)
+def page_workbench(request: Request, problem_id: int):
+    """FR-31：把题目工作台弹出为独立浏览器窗口时的落地页。"""
+    return _render(request, "workbench", page_title="题目工作台", problem_id=problem_id)

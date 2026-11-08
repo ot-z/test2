@@ -31,7 +31,7 @@ def env(key: str, default: str | None = None) -> str | None:
 
 APP_HOST = env("APP_HOST", "127.0.0.1") or "127.0.0.1"
 APP_PORT = int(env("APP_PORT", "8765") or "8765")
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.2.0"
 
 _db_path = Path(env("DATABASE_PATH", "data/quiz.db") or "data/quiz.db")
 if not _db_path.is_absolute():

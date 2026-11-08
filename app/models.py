@@ -330,9 +330,32 @@ class ProblemSnapshot(Base, TimestampMixin):
     user_initiated: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
+class KnowledgeMastery(Base, TimestampMixin):
+    """FR-32：用户对单个知识点的自评掌握程度（0–5）。无记录 = 未评估。"""
+    __tablename__ = "knowledge_mastery"
+    __table_args__ = (UniqueConstraint("node_id", name="uq_knowledge_mastery_node"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    node_id: Mapped[int] = mapped_column(ForeignKey("knowledge_nodes.id", ondelete="CASCADE"), nullable=False)
+    level: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
+    note: Mapped[str] = mapped_column(Text, default="", nullable=False)
+
+
+class CodeDraft(Base, TimestampMixin):
+    """题目工作台的代码草稿：一题一份，本地持久化，不参与任何导出。"""
+    __tablename__ = "code_drafts"
+    __table_args__ = (UniqueConstraint("problem_id", name="uq_code_draft_problem"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    problem_id: Mapped[int] = mapped_column(ForeignKey("problems.id", ondelete="CASCADE"), nullable=False)
+    language: Mapped[str] = mapped_column(String(40), default="C++", nullable=False)
+    code: Mapped[str] = mapped_column(Text, default="", nullable=False)
+
+
 ALL_TABLES = [
     Setting, KnowledgeNode, Problem, ProblemKnowledge, TagMapping,
     Syllabus, SyllabusItem, ProblemList, ProblemListItem,
     PlanConfig, DailyPlan, DailyPlanItem, ReviewState,
     StudyRecord, Note, AiCall, AiMessage, ExportRecord, SyncLog, ProblemSnapshot,
+    CodeDraft, KnowledgeMastery,
 ]

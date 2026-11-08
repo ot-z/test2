@@ -121,6 +121,7 @@
         '<div class="task-foot">' +
           '<div class="status-buttons">' + statusButtons(item) + '</div>' +
           '<span class="spacer"></span>' +
+          '<button class="btn btn-sm btn-primary" data-act="workbench" data-pid="' + QA.esc(item.problem_id) + '">题目工作台</button>' +
           '<a class="btn btn-sm" href="/notes?problem_id=' + QA.esc(item.problem_id) + '">写笔记' + (item.notes_count ? ' (' + item.notes_count + ')' : '') + '</a>' +
           '<button class="btn btn-sm" data-act="record" data-id="' + item.id + '">记录</button>' +
         '</div>' +
@@ -258,7 +259,8 @@
     var btn = e.target.closest('[data-act]');
     if (!btn) return;
     var act = btn.getAttribute('data-act');
-    if (act === 'status') { patchStatus(btn.getAttribute('data-id'), btn.getAttribute('data-status')); }
+    if (act === 'workbench') { QA.openWorkbench(btn.getAttribute('data-pid')); }
+    else if (act === 'status') { patchStatus(btn.getAttribute('data-id'), btn.getAttribute('data-status')); }
     else if (act === 'record') {
       var form = todayList.querySelector('form.record-form[data-id="' + btn.getAttribute('data-id') + '"]');
       if (form) form.hidden = !form.hidden;

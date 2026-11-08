@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="notice">
+  <strong>能力画像</strong> · 给每个知识点标一个自己的掌握程度。计划生成会优先安排与你水平匹配的题，
+  AI 分析会按这个深度讲解，凡遇到你没掌握的<strong>新知识必须用【新知识】标记并详细说明</strong>。
+  未评估的知识点按「能看懂题解」处理，不影响原有计划行为。
+</div>
+
+<div class="grid grid-4" id="ability-stats" style="margin-bottom:16px"></div>
+
+<div class="card">
+  <div class="card-head">
+    <div><div class="card-title">匹配规则</div><div class="card-desc">关闭后计划与原有逻辑完全一致；开启后只调整题目顺序，不减少任务数量</div></div>
+    <button class="btn btn-primary btn-sm" id="btn-save-config">保存规则</button>
+  </div>
+  <div class="form-row-3">
+    <div class="field"><label class="check"><input type="checkbox" id="cfg-enabled"> 启用能力匹配排序</label></div>
+    <div class="field"><label>允许比当前水平高出的难度档数</label><input type="number" id="cfg-offset" min="0" max="5" value="1"></div>
+    <div class="field"><label>每天建议最多接触几道含新知识的题</label><input type="number" id="cfg-maxnew" min="0" max="5" value="1"></div>
+  </div>
+  <div class="hint">「新知识」指掌握度 ≤ 1 的知识点。偏难或含新知识的题会排到后面，先做巩固题；AI 输出里会单独展开讲解。</div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <div><div class="card-title">知识点掌握程度</div><div class="card-desc" id="node-sub">加载中…</div></div>
+    <div class="row">
+      <input type="text" id="node-search" placeholder="搜索知识点" style="max-width:180px">
+      <select id="bulk-level" style="max-width:190px"></select>
+      <button class="btn btn-sm" id="btn-bulk">批量填入</button>
+      <button class="btn btn-sm" id="btn-bulk-unset">只填未评估</button>
+      <button class="btn btn-primary btn-sm" id="btn-save-levels">保存全部</button>
+    </div>
+  </div>
+  <div class="table-wrap" id="node-table"></div>
+  <div class="hint" style="margin-top:10px">
+    0 未接触（新知识） · 1 听说过但不会用 · 2 能看懂题解 · 3 能独立做基础题 · 4 熟练能变形 · 5 能讲解与变通。
+    「批量填入」只改页面上的值，需要再点「保存全部」才会写入。
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+  var $ = QA.el;
+  var current = null;
+  var LEVELS = [];
+
+  function statsHtml(s) {
+    var avg = s.average === null ? '未评估' : s.average + ' / 5';
+    return [
+      ['整体自评水平', avg],
+      ['已评估知识点', s.evaluated + ' / ' + s.total],
+      ['新知识（≤1）', s.new_count],
+      ['熟练掌握（≥4）', s.strong_count]
+    ].map(function (x) {
+      return '<div class="stat"><div class="stat-label">' + QA.esc(x[0]) + '</div>' +
+        '<div class="stat-value">' + QA.esc(x[1]) + '</div></div>';
+    }).join('');
+  }
+
+  function rowHtml(it) {
+    var opts = LEVELS.map(function (l) {
+      return '<option value="' + l.value + '"' + (l.value === it.level ? ' selected' : '') + '>' +
+        l.value + ' · ' + QA.esc(l.label) + '</option>';
+    }).join('');
+    return '<tr data-node="' + it.node_id + '" data-name="' + QA.esc(it.name.toLowerCase()) + '">' +
+      '<td><strong>' + QA.esc(it.name) + '</strong><div class="cell-sub">' + QA.esc(QA.categoryLabel(it.category)) + '</div></td>' +
+      '<td><select class="lv-select">' + opts + '</select></td>' +
+      '<td><input type="text" class="lv-note" value="' + QA.esc(it.note) + '" placeholder="如：只会背包模板，变形不熟"></td>' +
+      '<td>' + (it.evaluated ? QA.badge('已评估', 'badge-success') : QA.badge('未评估', 'badge-muted')) +
+        '<div class="cell-sub">' + QA.esc(it.updated_at ? QA.fmtDate(it.updated_at) : '按默认 2 处理') + '</div></td>' +
+      '</tr>';
+  }
+
+  function render(d) {
+    current = d;
+    LEVELS = d.levels || [];
+    $('ability-stats').innerHTML = statsHtml(d.stats);
+    $('node-sub').textContent = '共 ' + d.stats.total + ' 个知识点 · 已评估 ' + d.stats.evaluated + ' 个';
+    $('cfg-enabled').checked = !!d.config.enabled;
+    $('cfg-offset').value = d.config.challenge_offset;
+    $('cfg-maxnew').value = d.config.max_new_per_day;
+    $('bulk-level').innerHTML = LEVELS.map(function (l) {
+      return '<option value="' + l.value + '">全部设为 ' + l.value + ' · ' + QA.esc(l.label) + '</option>';
+    }).join('');
+    $('node-table').innerHTML = '<table><thead><tr><th>知识点</th><th>掌握程度</th><th>备注</th><th>状态</th></tr></thead><tbody>' +
+      (d.items || []).map(rowHtml).join('') + '</tbody></table>';
+  }
+
+  function load() {
+    return QA.get('/api/ability/profile').then(render).catch(function (e) {
+      QA.showError($('node-table'), e);
+    });
+  }
+
+  function collect() {
+    var rows = $('node-table').querySelectorAll('tr[data-node]');
+    var items = [];
+    Array.prototype.forEach.call(rows, function (tr) {
+      items.push({
+        node_id: Number(tr.getAttribute('data-node')),
+        level: Number(tr.querySelector('.lv-select').value),
+        note: tr.querySelector('.lv-note').value
+      });
+    });
+    return items;
+  }
+
+  $('btn-save-config').onclick = function () {
+    var b = this; b.disabled = true;
+    QA.put('/api/ability/config', {
+      enabled: $('cfg-enabled').checked,
+      challenge_offset: Number($('cfg-offset').value || 0),
+      max_new_per_day: Number($('cfg-maxnew').value || 0)
+    }).then(function () { QA.toast('匹配规则已保存', 'success'); load(); })
+      .catch(function (e) { QA.toast(QA.errMsg(e), 'error'); })
+      .then(function () { b.disabled = false; });
+  };
+
+  $('btn-save-levels').onclick = function () {
+    var b = this; b.disabled = true;
+    QA.put('/api/ability/levels', { items: collect() })
+      .then(function (d) { render(d); QA.toast('掌握程度已保存，计划与 AI 分析会按新画像调整', 'success'); })
+      .catch(function (e) { QA.toast(QA.errMsg(e), 'error'); })
+      .then(function () { b.disabled = false; });
+  };
+
+  function bulk(onlyUnset) {
+    var val = Number($('bulk-level').value);
+    var rows = $('node-table').querySelectorAll('tr[data-node]');
+    var n = 0;
+    Array.prototype.forEach.call(rows, function (tr) {
+      var status = tr.querySelector('td:last-child').textContent || '';
+      if (onlyUnset && status.indexOf('未评估') === -1) return;
+      tr.querySelector('.lv-select').value = String(val);
+      n++;
+    });
+    QA.toast('已填入 ' + n + ' 行，请点「保存全部」写入', 'info');
+  }
+  $('btn-bulk').onclick = function () { bulk(false); };
+  $('btn-bulk-unset').onclick = function () { bulk(true); };
+
+  $('node-search').oninput = function () {
+    var kw = this.value.trim().toLowerCase();
+    Array.prototype.forEach.call($('node-table').querySelectorAll('tr[data-node]'), function (tr) {
+      tr.style.display = (!kw || tr.getAttribute('data-name').indexOf(kw) !== -1) ? '' : 'none';
+    });
+  };
+
+  load();
+})();
+</script>
+{% endblock %}

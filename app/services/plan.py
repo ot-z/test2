@@ -24,6 +24,7 @@ from ..models import (
     ProblemListItem, ReviewState, StudyRecord,
 )
 from ..utils import model_dict, parse_date
+from . import ability
 
 STATUS_RANK = {"pending": 0, "overdue": 0, "learning": 1, "learned": 2, "ac": 3, "reviewed": 4}
 LEARNED_RANK = 2
@@ -253,6 +254,7 @@ def generate(db: Session, days: int = 30, from_date: date | None = None) -> dict
                 ProblemListItem.consumed.is_(False),
             ).order_by(ProblemListItem.position, ProblemListItem.id)
         ).all())
+    queue = ability.rank_queue(db, queue)  # FR-32：能力匹配排序；无画像时原样返回
     queue_idx = 0
 
     # 历史已生成的新题任务也要参与复习候选
@@ -361,6 +363,7 @@ def regenerate(db: Session, days: int = 30, from_date: date | None = None) -> di
                 ProblemListItem.consumed.is_(False),
             ).order_by(ProblemListItem.position, ProblemListItem.id)
         ).all())
+    queue = ability.rank_queue(db, queue)  # FR-32：能力匹配排序；无画像时原样返回
     queue_idx = 0
 
     source_pool = list(db.scalars(

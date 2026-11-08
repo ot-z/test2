@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 import subprocess
-from datetime import date, timedelta
+from datetime import date
 
 from alembic import command
 from alembic.config import Config as AlembicConfig

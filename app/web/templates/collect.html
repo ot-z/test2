@@ -4,7 +4,7 @@
 <div class="notice">
   <strong>自动题目录入 · 只按链接规则工作</strong>：粘贴题号、链接或题单文本，系统按
   <code class="inline">config/link_rules.yaml</code> 归一化题号并生成原题链接，确认后写入题库。
-  <strong>不访问、不抓取、不解析任何题目网页</strong>，也不生成题面快照。
+  本区域<strong>不访问任何题目网页</strong>，也不生成题面快照；需要下载题面请用页面底部的「洛谷题面下载」面板（独立通道、用户主动触发）。
   蓝桥云课题号是官方题库列表页的「编号」：<strong>254 = A+B 问题【OJ 示例题目】</strong>，不是 1；
   旧练习系统的 <code class="inline">T1 / BEGIN-1</code> 属于 legacy 变体。
 </div>
@@ -104,6 +104,52 @@
     <input type="checkbox" id="f-include-manual"> 同时修复人工编辑过的题目链接（默认跳过）
   </label>
   <div id="audit-result"><div class="hint">正在体检…</div></div>
+</div>
+
+<div class="card" id="card-luogu">
+  <div class="card-head">
+    <div>
+      <div class="card-title">洛谷题面下载 <span class="muted small">FR-30 · 公开题面本地缓存</span></div>
+      <div class="card-desc">按题号递增读取洛谷公开题目页自带的题面数据，自动写入标题、标签、知识点、难度，并把题面存成 Markdown。</div>
+    </div>
+    <div class="btn-group"><button class="btn btn-sm" id="btn-lg-status">刷新进度</button></div>
+  </div>
+
+  <div class="notice">
+    <strong>与上面的「扫描录入」是两回事</strong>：这里会联网读取公开题目页，只存题面 / 样例 / 数据范围，
+    不登录、不复用账号 Cookie、不抓题解，默认限速 ≥ 1.2 秒/请求、失败退避、可随时中断续跑。
+    题面版权归洛谷及出题人所有，<strong>仅供个人本地学习，不参与导出，请勿二次分发</strong>。
+    全量（当前主题库约 1.67 万题）请用命令行 <code class="inline">scripts/fetch_luogu.py --all</code>。
+  </div>
+
+  <div id="lg-status" class="row" style="margin-bottom:12px"><span class="hint">正在读取采集进度…</span></div>
+
+  <div class="form-row-3">
+    <div class="field">
+      <label>起始题号（数字）</label>
+      <input type="number" id="lg-start" value="1001" min="1" step="1">
+    </div>
+    <div class="field">
+      <label>结束题号（数字）</label>
+      <input type="number" id="lg-end" value="1020" min="1" step="1">
+    </div>
+    <div class="field">
+      <label>请求间隔（秒，最低 0.8）</label>
+      <input type="number" id="lg-interval" value="1.2" min="0.8" step="0.1">
+      <div class="field-help">单次最多 60 题；已抓过的题号自动跳过，重复运行即续跑。</div>
+    </div>
+  </div>
+
+  <div class="row">
+    <button class="btn" id="btn-lg-preview">仅预览题号</button>
+    <button class="btn" id="btn-lg-existing">补录已录题</button>
+    <button class="btn btn-primary" id="btn-lg-fetch">开始下载</button>
+    <label class="check" style="margin-left:8px">
+      <input type="checkbox" id="lg-force"> 覆盖人工编辑过的元信息
+    </label>
+  </div>
+
+  <div id="lg-result" style="margin-top:12px"><div class="hint">尚未执行题面下载。</div></div>
 </div>
 {% endblock %}
 
@@ -384,6 +430,138 @@
             .then(function (d) { renderRepair(d); QA.toast(d.message, 'success'); });
         });
     }).catch(function (e) { QA.toast(QA.errMsg(e), 'error'); });
+  };
+
+  /* ---------------------------------------------------------------- 洛谷题面下载 */
+  function lgPayload(overrides) {
+    var base = {
+      mode: 'range',
+      start: Number($('lg-start').value || 1001),
+      end: Number($('lg-end').value || 1020),
+      interval: Number($('lg-interval').value || 1.2),
+      force: $('lg-force').checked,
+      save_files: true
+    };
+    Object.keys(overrides || {}).forEach(function (k) { base[k] = overrides[k]; });
+    return base;
+  }
+
+  /* 与后端 /api/luogu/fetch 的校验保持一致：本地先拦一道，避免只在控制台留下 422 */
+  function validateLg(p) {
+    if (!isFinite(p.start) || !isFinite(p.end) || p.start < 1 || p.end < p.start) {
+      return '请填写合法的题号范围：起始 ≥ 1，结束 ≥ 起始（当前 ' + p.start + ' ~ ' + p.end + '）。';
+    }
+    if (p.mode === 'range' && p.end - p.start + 1 > 60) {
+      return 'Web 端单次最多 60 题（当前 ' + (p.end - p.start + 1) +
+        ' 题）。请缩小范围分批下载；需要全量请双击项目里的「下载全部洛谷题面.bat」。';
+    }
+    if (!isFinite(p.interval) || p.interval < 0.8) {
+      return '请求间隔不得低于 0.8 秒（当前 ' + p.interval +
+        ' 秒），这是站点的限速保护，请调大后重试。';
+    }
+    return '';
+  }
+
+  function guardLg(p) {
+    var msg = validateLg(p);
+    if (!msg) return true;
+    QA.toast(msg, 'error');
+    $('lg-result').innerHTML = '<div class="alert alert-error"><strong>参数不符合要求</strong><br>' +
+      QA.esc(msg) + '</div>';
+    return false;
+  }
+
+  function showLgError(e) {
+    var msg = QA.errMsg(e);
+    QA.toast(msg, 'error');
+    $('lg-result').innerHTML = '<div class="alert alert-error"><strong>操作未完成</strong><br>' +
+      QA.esc(msg) + '</div>';
+    loadLgStatus();
+  }
+
+  function renderLgStatus(d) {
+    var html = '<span class="badge badge-primary">洛谷题目 ' + QA.esc(d.problems_luogu) + ' 题</span> ' +
+      '<span class="badge badge-success">题面快照 ' + QA.esc(d.snapshots) + ' 份</span> ' +
+      '<span class="badge">知识点关联 ' + QA.esc(d.mapped_links) + ' 条</span> ' +
+      '<span class="badge">已完成 ' + QA.esc(d.state.done) + ' 题</span> ' +
+      '<span class="badge ' + (d.state.failed ? 'badge-warn' : '') + '">失败 ' + QA.esc(d.state.failed) + '</span> ' +
+      '<span class="badge">清单题号 ' + QA.esc(d.catalog.pids) + '</span>';
+    html += '<div class="hint" style="width:100%;margin-top:6px">题面目录：' + QA.esc(d.md_dir) +
+      '　索引：' + QA.esc(d.index_path || '（尚未生成）') +
+      '　进度：' + QA.esc(d.state_path) + '　最后处理：' + QA.esc(d.state.last_pid || '—') + '</div>';
+    $('lg-status').innerHTML = html;
+  }
+
+  function loadLgStatus() {
+    return QA.get('/api/luogu/status').then(renderLgStatus)
+      .catch(function (e) { QA.showError($('lg-status'), e); });
+  }
+
+  function renderLgResult(d) {
+    if (d.dry_run) {
+      $('lg-result').innerHTML = '<div class="alert alert-info">预览：本次将处理 ' + QA.esc(d.planned) +
+        ' 个题号，前 50 个：' + QA.esc((d.pids || []).join('、')) + '。<br>未发起外部请求、未写入数据。</div>';
+      return;
+    }
+    var html = '<div class="alert ' + (d.failed ? 'alert-warn' : 'alert-ok') + '"><strong>' +
+      QA.esc(d.message || '采集完成') + '</strong></div>';
+    if (d.index && d.index.warning) {
+      html += '<div class="alert alert-warn">' + QA.esc(d.index.warning) + '</div>';
+    }
+    html += '<div class="row" style="margin-bottom:10px">' +
+      '<span class="badge badge-success">新增 ' + QA.esc(d.added) + '</span>' +
+      '<span class="badge badge-primary">更新 ' + QA.esc(d.updated) + '</span>' +
+      '<span class="badge">快照 ' + QA.esc(d.snapshots) + '</span>' +
+      '<span class="badge">文件 ' + QA.esc(d.files) + '</span>' +
+      '<span class="badge">人工跳过 ' + QA.esc(d.skipped_manual) + '</span>' +
+      '<span class="badge">不存在 ' + QA.esc(d.missing) + '</span></div>';
+    var items = d.items || [];
+    if (items.length) {
+      html += '<div class="table-wrap"><table><thead><tr><th>题号</th><th>标题</th><th>难度</th>' +
+        '<th>洛谷标签</th><th>归一知识点</th><th>快照</th></tr></thead><tbody>';
+      items.slice(0, 30).forEach(function (it) {
+        html += '<tr><td class="mono">' + QA.esc(it.pid) + '</td><td>' + QA.esc(it.title) + '</td>' +
+          '<td class="small">' + QA.esc(it.difficulty) + '</td>' +
+          '<td class="small">' + QA.esc((it.tags || []).slice(0, 5).join('、')) + '</td>' +
+          '<td class="small">' + QA.esc((it.knowledge_nodes || []).slice(0, 6).join('、') || '—') + '</td>' +
+          '<td>' + QA.badge(it.snapshot, it.snapshot === 'created' ? 'badge-success' : '') + '</td></tr>';
+      });
+      html += '</tbody></table></div>';
+      if (items.length > 30) html += '<div class="hint">仅显示前 30 题。</div>';
+    }
+    $('lg-result').innerHTML = html;
+    loadLgStatus();
+  }
+
+  function runLg(payload, title, message) {
+    QA.confirmDanger(title, message, function () {
+      $('lg-result').innerHTML = QA.loading('正在按限速下载题面，请勿关闭页面…');
+      return QA.post('/api/luogu/fetch', payload).then(renderLgResult).catch(showLgError);
+    });
+  }
+
+  $('btn-lg-status').onclick = loadLgStatus;
+  loadLgStatus();
+
+  $('btn-lg-preview').onclick = function () {
+    var p = lgPayload({ dry_run: true });
+    if (!guardLg(p)) return;
+    QA.post('/api/luogu/fetch', p).then(renderLgResult).catch(showLgError);
+  };
+
+  $('btn-lg-fetch').onclick = function () {
+    var p = lgPayload({});
+    if (!guardLg(p)) return;
+    runLg(p, '确认开始下载题面',
+      '将按 ' + p.interval + ' 秒/请求的限速访问洛谷公开题目页（约 ' + (p.end - p.start + 1) +
+      ' 个题号），把题面、标签、知识点、难度写入本地题库。中途可关闭页面，进度会自动续传。');
+  };
+
+  $('btn-lg-existing').onclick = function () {
+    var p = lgPayload({ mode: 'existing', start: 1, end: 1 });
+    if (!guardLg(p)) return;
+    runLg(p, '确认补录已录题题面',
+      '将给题库中已录入的洛谷题目补齐题面、标签、知识点与难度（单次最多 60 题）。');
   };
 })();
 </script>

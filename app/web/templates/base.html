@@ -4,7 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{{ page_title }} · 刷题助手</title>
-  <link rel="stylesheet" href="{{ url_for('static', path='/style.css') }}">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <div class="layout">
@@ -49,7 +50,8 @@
   <div id="qa-modal-root"></div>
 
   <script>window.QA_SOURCES = {{ sources | tojson }};</script>
-  <script src="{{ url_for('static', path='/app.js') }}"></script>
+  <script src="/static/app.js"></script>
+  <script src="/static/workbench.js"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

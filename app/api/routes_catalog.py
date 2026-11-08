@@ -5,7 +5,7 @@ from fastapi import APIRouter, Body, Depends, Query
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-from ..services import catalog
+from ..services import catalog, workbench
 
 router = APIRouter(prefix="/api/problems", tags=["题目目录"])
 
@@ -66,3 +66,15 @@ def save_snapshot(problem_id: int, payload: dict = Body(...), db: Session = Depe
 @router.delete("/{problem_id}/snapshots/{snapshot_id}")
 def delete_snapshot(problem_id: int, snapshot_id: int, db: Session = Depends(get_db)):
     return catalog.delete_snapshot(db, snapshot_id)
+
+
+@router.get("/{problem_id}/workbench")
+def workbench_detail(problem_id: int, db: Session = Depends(get_db)):
+    """FR-31：题目工作台一次取齐题面 / 草稿 / 记录 / 笔记 / AI 历史。"""
+    return workbench.detail(db, problem_id)
+
+
+@router.put("/{problem_id}/code")
+def save_code_draft(problem_id: int, payload: dict = Body(...), db: Session = Depends(get_db)):
+    """保存该题目的代码草稿（一题一份，覆盖式）。"""
+    return workbench.save_draft(db, problem_id, payload)
